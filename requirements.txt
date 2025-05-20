@@ -4,3 +4,6 @@ pandas==2.2.3
 tqdm==4.67.1
 rdkit==2025.3.2
 scikit-learn==1.6.1
+FLAML==1.2.0
+xgboost==3.0.1
+numpy==1.26.4
