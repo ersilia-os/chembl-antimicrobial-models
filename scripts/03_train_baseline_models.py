@@ -330,21 +330,21 @@ for pathogen in PATHOGENS:
         X = np.array(X)
         Y = np.array(Y)
 
-        print("Training NB...")
+        # print("Training NB...")
 
-        # Naive Bayes
-        NB, results_NB = NaiveBayesClassificationModel(X, Y)
-        joblib.dump(NB, os.path.join(output_dir, "NB.joblib"))
-        with open(os.path.join(output_dir, "NB_CV.csv"), "w") as f:
-            f.write(",".join(results_NB))
+        # # Naive Bayes
+        # NB, results_NB = NaiveBayesClassificationModel(X, Y)
+        # joblib.dump(NB, os.path.join(output_dir, "NB.joblib"))
+        # with open(os.path.join(output_dir, "NB_CV.csv"), "w") as f:
+        #     f.write(",".join(results_NB))
 
-        # print("Training RF...")
+        print("Training RF...")
 
-        # # Random Forest
-        # RF, results_RF = RandomForestClassificationModel(X, Y)
-        # joblib.dump(RF, os.path.join(output_dir, "RF.joblib"))
-        # with open(os.path.join(output_dir, "RF_CV.csv"), "w") as f:
-        #     f.write(",".join(results_RF))
+        # Random Forest
+        RF, results_RF = RandomForestClassificationModel(X, Y)
+        joblib.dump(RF, os.path.join(output_dir, "RF.joblib"))
+        with open(os.path.join(output_dir, "RF_CV.csv"), "w") as f:
+            f.write(",".join(results_RF))
 
         # print("Training FLAML...")
 
