@@ -13,7 +13,7 @@ PATH_TO_OUTPUT = os.path.join("..", "output", "05_correlations.tsv")
 PATH_TO_PREDICTIONS = os.path.join("..", "output", "04_predictions_drugbank")
 
 # Trained models
-MODELS = ['NB', 'RF', 'FLAML']
+MODELS = ['NB', 'RF']
 
 PREDICTIONS = {}
 ALL_MODELS = []

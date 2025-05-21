@@ -12,7 +12,7 @@ import joblib
 import os
 
 # Get all pathogens i.e. {pathogen}_{target}
-PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))[:1]
+PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))
 
 # Define some paths
 PATH_TO_FEATURES = os.path.join("..", "output", "02_features")
@@ -330,13 +330,13 @@ for pathogen in PATHOGENS:
         X = np.array(X)
         Y = np.array(Y)
 
-        # print("Training NB...")
+        print("Training NB...")
 
-        # # Naive Bayes
-        # NB, results_NB = NaiveBayesClassificationModel(X, Y)
-        # joblib.dump(NB, os.path.join(output_dir, "NB.joblib"))
-        # with open(os.path.join(output_dir, "NB_CV.csv"), "w") as f:
-        #     f.write(",".join(results_NB))
+        # Naive Bayes
+        NB, results_NB = NaiveBayesClassificationModel(X, Y)
+        joblib.dump(NB, os.path.join(output_dir, "NB.joblib"))
+        with open(os.path.join(output_dir, "NB_CV.csv"), "w") as f:
+            f.write(",".join(results_NB))
 
         # print("Training RF...")
 
@@ -346,10 +346,10 @@ for pathogen in PATHOGENS:
         # with open(os.path.join(output_dir, "RF_CV.csv"), "w") as f:
         #     f.write(",".join(results_RF))
 
-        print("Training FLAML...")
+        # print("Training FLAML...")
 
-        # FLAML
-        FLAML, results_FLAML = FLAMLClassificationModel(X, Y)
-        joblib.dump(FLAML, os.path.join(output_dir, "FLAML.joblib"))
-        with open(os.path.join(output_dir, "FLAML_CV.csv"), "w") as f:
-            f.write(",".join(results_FLAML))
+        # # FLAML
+        # FLAML, results_FLAML = FLAMLClassificationModel(X, Y)
+        # joblib.dump(FLAML, os.path.join(output_dir, "FLAML.joblib"))
+        # with open(os.path.join(output_dir, "FLAML_CV.csv"), "w") as f:
+        #     f.write(",".join(results_FLAML))
