@@ -12,7 +12,7 @@ import joblib
 import os
 
 # Get all pathogens i.e. {pathogen}_{target}
-PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))[3:]
+PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))[:1]
 
 # Define some paths
 PATH_TO_FEATURES = os.path.join("..", "output", "02_features")
@@ -85,11 +85,6 @@ def FLAMLClassificationModel(X, Y, N_FOLDS=5, SPLITTING_ROUNDS=3):
     FLAML_COLD_MAXIMUM_ITERATIONS = 250
     FLAML_WARM_MINIMUM_ITERATIONS = 25
     FLAML_WARM_MAXIMUM_ITERATIONS = 100
-
-    FLAML_COLD_MINIMUM_TIME_BUDGET_SECONDS = 50
-    FLAML_COLD_MAXIMUM_TIME_BUDGET_SECONDS = 100
-    FLAML_WARM_MINIMUM_TIME_BUDGET_SECONDS = 50
-    FLAML_WARM_MAXIMUM_TIME_BUDGET_SECONDS = 100
 
     # Clean up log files function
     def clean_log(log_file_name):
@@ -343,18 +338,18 @@ for pathogen in PATHOGENS:
         # with open(os.path.join(output_dir, "NB_CV.csv"), "w") as f:
         #     f.write(",".join(results_NB))
 
-        print("Training RF...")
+        # print("Training RF...")
 
-        # Random Forest
-        RF, results_RF = RandomForestClassificationModel(X, Y)
-        joblib.dump(RF, os.path.join(output_dir, "RF.joblib"))
-        with open(os.path.join(output_dir, "RF_CV.csv"), "w") as f:
-            f.write(",".join(results_RF))
+        # # Random Forest
+        # RF, results_RF = RandomForestClassificationModel(X, Y)
+        # joblib.dump(RF, os.path.join(output_dir, "RF.joblib"))
+        # with open(os.path.join(output_dir, "RF_CV.csv"), "w") as f:
+        #     f.write(",".join(results_RF))
 
-        # print("Training FLAML...")
+        print("Training FLAML...")
 
-        # # FLAML
-        # FLAML, results_FLAML = FLAMLClassificationModel(X, Y)
-        # joblib.dump(FLAML, os.path.join(output_dir, "FLAML.joblib"))
-        # with open(os.path.join(output_dir, "FLAML_CV.csv"), "w") as f:
-        #     f.write(",".join(results_FLAML))
+        # FLAML
+        FLAML, results_FLAML = FLAMLClassificationModel(X, Y)
+        joblib.dump(FLAML, os.path.join(output_dir, "FLAML.joblib"))
+        with open(os.path.join(output_dir, "FLAML_CV.csv"), "w") as f:
+            f.write(",".join(results_FLAML))
