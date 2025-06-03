@@ -12,7 +12,7 @@ import joblib
 import os
 
 # Get all pathogens i.e. {pathogen}_{target}
-PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))[:1]
+PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))
 
 # Define some paths
 PATH_TO_FEATURES = os.path.join("..", "output", "02_features")
@@ -25,13 +25,12 @@ for pathogen in PATHOGENS:
     # Get list of tasks
     tasks = sorted(os.listdir(os.path.join("..", "data", pathogen)))
 
-    # # Get IK to MFP
-    # IKs = open(os.path.join(PATH_TO_FEATURES, pathogen, 'IKS.txt')).read().splitlines()
-    # MFPs = np.load(os.path.join(PATH_TO_FEATURES, pathogen, "X.npz"))['X']
-    # IK_TO_MFP = {i: j for i, j in zip(IKs, MFPs)}
-
     # For each task
     for task in tasks:
+
+        # if task is not done yet
+        if os.path.exists(os.path.join(PATH_TO_OUTPUT, pathogen, task.replace(".csv", ""), "LQ_optuna_CV.csv")) == True:
+            continue
 
         print(f"TASK: {task}")
 
@@ -39,22 +38,31 @@ for pathogen in PATHOGENS:
         output_dir = os.path.join(PATH_TO_OUTPUT, pathogen, task.replace(".csv", ""))
         os.makedirs(output_dir, exist_ok=True)
 
+        # Load those IKs that have been processed in previous steps
+        IKs = open(os.path.join(PATH_TO_FEATURES, pathogen, 'IKS.txt')).read().splitlines()
+
         # Load data
         df = pd.read_csv(os.path.join("..", "data", pathogen, task))
         cols = df.columns.tolist()
         X_smiles, Y = [], []
-        for smiles, act in zip(df['smiles'], df[cols[2]]):
-            X_smiles.append(smiles)
-            Y.append(act)
+        for IK, smiles, act in zip(df['inchikey'], df['smiles'], df[cols[2]]):
+            if IK in IKs:
+                X_smiles.append(smiles)
+                Y.append(act)
 
         # To np.array
         X_smiles = np.array(X_smiles)
         Y = np.array(Y)
 
-        # Subsample
-        indices = np.random.choice(len(X_smiles), size=500, replace=False)
-        X_smiles = X_smiles[indices]
-        Y = Y[indices]
+        # # Subsample
+        # indices = np.random.choice(len(X_smiles), size=100, replace=False)
+        # X_smiles = X_smiles[indices]
+        # Y = Y[indices]
+
+        # Fit model with all data
+        model_all = lq.LazyBinaryQSAR(descriptor_type='morgan', model_type="xgboost")
+        model_all.fit(X_smiles, Y)
+        model_all.save_model(model_dir=os.path.join(PATH_TO_OUTPUT, pathogen, task.replace(".csv", ""), "LQ_optuna"))
 
         # Cross-validations
         skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
@@ -62,14 +70,13 @@ for pathogen in PATHOGENS:
         for train_index, test_index in skf.split(X_smiles, Y):
             X_train, X_test = X_smiles[train_index], X_smiles[test_index]
             y_train, y_test = Y[train_index], Y[test_index]
-            # Available descriptors: morgan, mordred, rdkit, classic, maccs
-            # Available models: xgboost
             model_cv = lq.LazyBinaryQSAR(descriptor_type='morgan', model_type="xgboost")
             model_cv.fit(X=X_train, y=y_train)
-            # model.save_model(model_dir="my_model")
             fpr, tpr, _ = roc_curve(y_test, model_cv.predict_proba(X_test))
             auroc = auc(fpr, tpr)
             aurocs.append(auroc)
 
 
-        break
+        # Save AUROC CVs
+        with open(os.path.join(PATH_TO_OUTPUT, pathogen, task.replace(".csv", ""), "LQ_optuna_CV.csv"), "w") as f:
+            f.write(",".join([str(round(i, 4)) for i in aurocs]))
