@@ -12,7 +12,7 @@ import joblib
 import os
 
 # Get all pathogens i.e. {pathogen}_{target}
-PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))
+PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))[:1]
 
 # Define some paths
 PATH_TO_FEATURES = os.path.join("..", "output", "02_features")
@@ -38,26 +38,31 @@ for pathogen in PATHOGENS:
         output_dir = os.path.join(PATH_TO_OUTPUT, pathogen, task.replace(".csv", ""))
         os.makedirs(output_dir, exist_ok=True)
 
-        # Load those IKs that have been processed in previous steps
+
+        # Get IK to MFP
         IKs = open(os.path.join(PATH_TO_FEATURES, pathogen, 'IKS.txt')).read().splitlines()
+        MFPs = np.load(os.path.join(PATH_TO_FEATURES, pathogen, "X.npz"))['X']
+        IK_TO_MFP = {i: j for i, j in zip(IKs, MFPs)}
 
         # Load data
         df = pd.read_csv(os.path.join("..", "data", pathogen, task))
         cols = df.columns.tolist()
-        X_smiles, Y = [], []
-        for IK, smiles, act in zip(df['inchikey'], df['smiles'], df[cols[2]]):
-            if IK in IKs:
-                X_smiles.append(smiles)
+        X, Y = [], []
+        for ik, act in zip(df['inchikey'], df[cols[2]]):
+            if ik in IK_TO_MFP:
+                X.append(IK_TO_MFP[ik])
                 Y.append(act)
 
         # To np.array
-        X_smiles = np.array(X_smiles)
+        X = np.array(X)
         Y = np.array(Y)
 
         # # Subsample
         # indices = np.random.choice(len(X_smiles), size=100, replace=False)
         # X_smiles = X_smiles[indices]
         # Y = Y[indices]
+
+        # try:
 
         # Fit model with all data
         model_all = lq.LazyBinaryQSAR(descriptor_type='morgan', model_type="xgboost")
@@ -76,7 +81,10 @@ for pathogen in PATHOGENS:
             auroc = auc(fpr, tpr)
             aurocs.append(auroc)
 
-
         # Save AUROC CVs
         with open(os.path.join(PATH_TO_OUTPUT, pathogen, task.replace(".csv", ""), "LQ_optuna_CV.csv"), "w") as f:
             f.write(",".join([str(round(i, 4)) for i in aurocs]))
+
+        # except:
+
+        #     pass
