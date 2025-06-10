@@ -51,7 +51,15 @@ for pathogen in tqdm.tqdm(PATHOGENS):
     with open(os.path.join(PATH_TO_OUTPUT, "framework", "run.sh"), 'w') as f:
         f.write("python $1/code/main.py $2 $3\n")
 
-    # FOr each task
+    # Load and filter correlations
+    correlations = pd.read_csv(os.path.join("../output/05_correlations/05_correlations.tsv"), sep='\t')
+    correlations = correlations[(correlations['Pathogen1'] == pathogen) & 
+                                (correlations['Pathogen2'] == pathogen) &
+                                (correlations['Model1'] == "RF") & 
+                                (correlations['Model2'] == "RF") & 
+                                (correlations['Same task'] == False)].reset_index(drop=True)
+
+    # For each task
     for task in tasks:
 
         # Copy the zsRF model

@@ -37,7 +37,7 @@ for pathogen in PATHOGENS:
 
     # Get probabilities
     pt = PowerTransformer()
-    data = df.values.copy()
+    data = df.copy()
 
     # Fitting
     pt.fit(data)
