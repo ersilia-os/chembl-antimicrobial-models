@@ -36,7 +36,7 @@ for smiles in drugbank_smiles:
 X = np.array(X, dtype=np.int16)
 
 # Trained models
-MODELS = ['NB', 'RF', 'FLAML']
+MODELS = ['NB', 'RF']#, 'FLAML']
 
 for pathogen in PATHOGENS:
 

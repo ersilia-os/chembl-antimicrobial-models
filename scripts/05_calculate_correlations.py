@@ -9,7 +9,8 @@ import os
 PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))
 
 # Define some paths
-PATH_TO_OUTPUT = os.path.join("..", "output", "05_correlations.tsv")
+PATH_TO_OUTPUT = os.path.join("..", "output", "05_correlations", "05_correlations.tsv")
+os.makedirs(os.path.dirname(os.path.join("..", "output", "05_correlations")), exist_ok=True)
 PATH_TO_PREDICTIONS = os.path.join("..", "output", "04_predictions_drugbank")
 
 # Trained models
@@ -55,7 +56,7 @@ for pat1, task1, model1 in tqdm(ALL_MODELS[:]):
     try:
         preds1 = np.array(PREDICTIONS[(pat1, task1, model1)])
     except:
-        preds1 = [np.nan] * 11915
+        preds1 = [np.nan] * 11915  # number of compounds in DrugBank
     
     for pat2, task2, model2 in ALL_MODELS[count:]:
 
@@ -68,7 +69,7 @@ for pat1, task1, model1 in tqdm(ALL_MODELS[:]):
         try:
             preds2 = np.array(PREDICTIONS[(pat2, task2, model2)])
         except:
-            preds2 = [np.nan] * 11915
+            preds2 = [np.nan] * 11915  # number of compounds in DrugBank
 
         # Calculate correlations
         spearman = spearmanr(preds1, preds2)
