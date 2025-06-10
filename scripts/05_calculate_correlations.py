@@ -10,7 +10,7 @@ PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))
 
 # Define some paths
 PATH_TO_OUTPUT = os.path.join("..", "output", "05_correlations", "05_correlations.tsv")
-os.makedirs(os.path.dirname(os.path.join("..", "output", "05_correlations")), exist_ok=True)
+os.makedirs(os.path.join("..", "output", "05_correlations"), exist_ok=True)
 PATH_TO_PREDICTIONS = os.path.join("..", "output", "04_predictions_drugbank")
 
 # Trained models
