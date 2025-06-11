@@ -13,7 +13,7 @@ PATH_TO_MODELS = "../other/models"
 
 # Get all pathogens i.e. {pathogen}_{target}
 PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))
-PATHOGENS = ["abaumannii_organism", 'kpneumoniae_organism']
+
 
 # For each pathogen
 for pathogen in PATHOGENS:
