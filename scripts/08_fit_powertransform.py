@@ -23,6 +23,7 @@ for pathogen in PATHOGENS:
 
     # Read the run_columns file
     run_columns = pd.read_csv(os.path.join(PATH_TO_MODELS, f"model_{pathogen}", "framework", "columns", "run_columns.csv"))['name'].tolist()
+    run_columns = [i for i in run_columns if i != "0_consensus_score"]  # Exclude consensus score
 
     # For each model
     for model in run_columns:
