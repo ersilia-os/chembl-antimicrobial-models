@@ -34,7 +34,7 @@ for pathogen in tqdm.tqdm(PATHOGENS):
         "name": ["0_consensus_score"] + [clean_string_regex(i) for i in tasks],
         "type": ['float'] + ['float' for i in tasks],
         "direction": ['high'] + ['high' for i in tasks],
-        "description": ['Consensus score among datasets'] + ["Predicted probability of being active according to task " + 
+        "description": ['Consensus score among tasks'] + ["Predicted probability of being active according to task " + 
                                                              clean_string_regex(i) for i in tasks] # Caution with %s and special characters
     })
     run_columns.to_csv(os.path.join(PATH_TO_OUTPUT, "framework", "columns", "run_columns.csv"), index=False)
