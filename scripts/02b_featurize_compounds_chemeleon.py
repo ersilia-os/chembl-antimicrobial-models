@@ -57,7 +57,7 @@ PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))
 # Define some paths
 PATH_TO_OUTPUT = os.path.join("..", "output", "02_features")
 
-for pathogen in PATHOGENS:
+for pathogen in PATHOGENS[1:]:
 
     print(f"Featurizing {pathogen}...")
 
@@ -96,33 +96,5 @@ for pathogen in PATHOGENS:
 
     # Save results
     np.savez_compressed(os.path.join(PATH_TO_OUTPUT, pathogen, "X_CheMeleon.npz"), X=X)
-    with open(os.path.join(PATH_TO_OUTPUT, pathogen, "IDs_CheMeleon.txt"), "w") as f:
+    with open(os.path.join(PATH_TO_OUTPUT, pathogen, "IKs_CheMeleon.txt"), "w") as f:
         f.write("\n".join(IKs))
-
-        break
-
-    # # Get all features
-    # IKS, X = [], []
-    # mfpgen = rdFingerprintGenerator.GetMorganGenerator(radius=3, fpSize=2048)
-    # for IK in tqdm(sorted(ik_to_smiles)):
-    #     try:
-    #         smi = ik_to_smiles[IK]
-    #         mol = Chem.MolFromSmiles(smi)
-    #         mfp = mfpgen.GetCountFingerprint(mol)
-    #         X.append(mfp.ToList())
-    #         IKS.append(IK)
-    #     except:
-    #         pass
-
-    # # Convert to numpy array
-    # X = np.array(X, dtype=np.int16)
-
-    # # Save results
-    # os.makedirs(os.path.join(PATH_TO_OUTPUT, pathogen), exist_ok=True)
-    # np.savez_compressed(os.path.join(PATH_TO_OUTPUT, pathogen, "X.npz"), X=X)
-    # with open(os.path.join(PATH_TO_OUTPUT, pathogen, "IKS.txt"), "w") as f:
-    #     for ik in IKS:
-    #         f.write(f"{ik}\n")
-
-    # # Assert that the number of IKs and MFPs are the same
-    # assert len(IKS) == X.shape[0], f"ERROR: Number of IKs ({len(IKS)}) does not match number of MFPs ({X.shape[0]})"

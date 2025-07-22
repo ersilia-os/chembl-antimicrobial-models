@@ -12,7 +12,7 @@ import joblib
 import os
 
 # Get all pathogens i.e. {pathogen}_{target}
-PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))[7:]
+PATHOGENS = sorted(os.listdir(os.path.join("..", "data")))
 
 # Define some paths
 PATH_TO_FEATURES = os.path.join("..", "output", "02_features")
