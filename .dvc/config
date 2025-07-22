@@ -1,0 +1,4 @@
+[core]
+    remote = sbnb-irbbarcelona
+['remote "sbnb-irbbarcelona"']
+    url = s3://sbnb-irbbarcelona/chembl-antimicrobial-models
