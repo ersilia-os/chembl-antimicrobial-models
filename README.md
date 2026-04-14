@@ -1,96 +1,71 @@
-# Ersilia's analysis template
+# Antimicrobial ML Models from ChEMBL
 
-This repository provides a structured template for setting up new research analysis in Ersilia.
+This repository trains binary antimicrobial activity classification models from datasets produced by the [`chembl-antimicrobial-tasks`](https://github.com/ersilia-os/chembl-antimicrobial-tasks) pipeline. For each pathogen of interest, the pipeline downloads curated binary datasets (SMILES + activity label), optionally augments them with decoys, and trains QSAR models using [LazyQSAR](https://github.com/ersilia-os/lazy-qsar).
 
-## Background
+## Setup
 
-Replace this paragraph with a short description of the project. This description should explain the background or context of the project, specifying collaborators.
+Clone this repository and create a Conda environment:
 
-## Tracking details
+```sh
+git clone https://github.com/ersilia-os/chembl-antimicrobial-models.git
+cd chembl-antimicrobial-models
+conda create -n camm python=3.12 -y
+conda activate camm
+pip install -r requirements.txt
+```
 
-The project is is tracked in [GitHub](https://github.com/ersilia-os/) (mainly for code) and [EOSVC](https://github.com/ersilia-os/eosvc) (mainly for data):
+### Data download
 
-* Tracked by Git and linked to a Github repository: only src, scripts and notebooks.
-* Tracked by DVC and linked to a public or private S3 bucket.
+Data is stored with the [eosvc](https://github.com/ersilia-os/eosvc) tool:
+
+```sh
+eosvc download --path data
+eosvc download --path output
+```
+
+## Supported pathogens
+
+| Code | Organism |
+|------|----------|
+| `abaumannii` | *Acinetobacter baumannii* |
+| `calbicans` | *Candida albicans* |
+| `campylobacter` | *Campylobacter* spp. |
+| `ecoli` | *Escherichia coli* |
+| `efaecium` | *Enterococcus faecium* |
+| `enterobacter` | *Enterobacter* spp. |
+| `hpylori` | *Helicobacter pylori* |
+| `kpneumoniae` | *Klebsiella pneumoniae* |
+| `mtuberculosis` | *Mycobacterium tuberculosis* |
+| `ngonorrhoeae` | *Neisseria gonorrhoeae* |
+| `paeruginosa` | *Pseudomonas aeruginosa* |
+| `pfalciparum` | *Plasmodium falciparum* |
+| `saureus` | *Staphylococcus aureus* |
+| `smansoni` | *Schistosoma mansoni* |
+| `spneumoniae` | *Streptococcus pneumoniae* |
+
+## Pipeline overview
+
+| Step | Script | What it does |
+|------|--------|-------------|
+| 01 | `scripts/01_download_datasets.py` | Downloads representative binary datasets from `chembl-antimicrobial-tasks` outputs |
+| 02 | `scripts/02_add_decoys.py` | Augments active-enriched datasets with ChEMBL decoys where needed |
+| 03 | `scripts/03_train_models.py` | Trains LazyQSAR binary classifiers and saves ONNX models |
 
 ## Repository structure
 
-This repository is organized as follows:
-
 ```
-eos-analysis-template/
-│
-├── LICENSE
-├── README.md
-├── .gitignore
-├── install.sh
-├── requirements.txt
-│
+chembl-antimicrobial-models/
 ├── data/
-│   ├── raw/
-│   └── processed/
-│
-├── scripts/
-├── notebooks/
-├── assets/
+│   ├── raw/          # Downloaded datasets per pathogen
+│   └── processed/    # Datasets ready for training (after decoy augmentation)
+├── scripts/          # Pipeline scripts
+├── notebooks/        # Exploratory notebooks
 ├── output/
-│   ├── results/
-│   └── plots/
-│
-├── src/
-├── tools/
-├── docs/
-├── tmp/
-│
-└── .git/
+│   ├── models/       # Trained LazyQSAR models (ONNX)
+│   └── plots/        # Evaluation figures
+├── src/              # Shared utility code
+└── docs/             # Additional documentation
 ```
-
-- **data/**
-  - **raw/** → Original, untouched datasets  
-  - **processed/** → Cleaned and transformed datasets  
-
-- **scripts/** → Standalone scripts for preprocessing or automation  
-
-- **notebooks/** → Jupyter notebooks for exploration and prototyping  
-
-- **assets/** → Images, figures, and other static resources  
-
-- **output/**
-  - **results/** → Numerical results, logs, or text outputs  
-  - **plots/** → Visualizations and charts  
-
-- **src/** → Core source code and reusable modules  
-
-- **tools/** → Helper utilities and development tools  
-
-- **docs/** → Project documentation and reports  
-
-- **tmp/** → Temporary files or intermediate outputs  
-
-- **.git/** → Git metadata (version control)  
-
----
-
-📌 Empty folders are preserved with `.gitkeep` files so the structure remains consistent in Git.
-
----
-
-## Project motivation and goal
-
-Write a brief description about the scientific motivation and goal of the project. 
-
-## 🚀 Getting Started
-
-**Clone this repository**  
-
-```bash
-git clone <your-repo-url>
-cd eos-analysis-template
-```
-
-## Using this repository
-
-This repository may contain data and outputs that are not stored in GitHub. You can use [eosvc](https://github.com/ersilia-os/eosvc) to download these files or, otherwise, simply download them and place them in the current folder following [this link](https://example.com).
 
 ## About the Ersilia Open Source Initiative
 
