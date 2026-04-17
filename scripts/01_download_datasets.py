@@ -143,13 +143,33 @@ def merge_all_pathogens() -> None:
     out_path = os.path.join(processed, "01_chembl_datasets_all.csv")
     df.to_csv(out_path, index=False)
     print(f"Saved combined datasets ({len(df)} rows) to {out_path}")
+    return df
+
+
+def print_summary(df: pd.DataFrame, all_pathogens: bool) -> None:
+    print("\n--- Summary ---")
+    print(f"Total datasets      : {len(df)}")
+    print(f"Average ratio       : {df['ratio'].mean():.3f} ± {df['ratio'].std():.3f}")
+    print(f"\nDatasets per label:")
+    for label, count in df['label'].value_counts().items():
+        print(f"  {label}: {count}")
+    if all_pathogens:
+        print(f"\nPathogens processed : {df['pathogen'].nunique()} / {len(PATHOGENS)}")
+        print(f"\nDatasets per pathogen:")
+        for pathogen, count in df.groupby('pathogen').size().items():
+            n_cpds = df.loc[df['pathogen'] == pathogen, 'compounds'].sum()
+            print(f"  {pathogen}: {count} datasets, {n_cpds:,} compounds")
 
 
 def main(args: argparse.Namespace) -> None:
     pathogens = PATHOGENS if args.all else [args.pathogen]
     for pathogen in pathogens:
         download_pathogen(pathogen)
-    merge_all_pathogens()
+    df = merge_all_pathogens()
+    if df is not None:
+        if not args.all:
+            df = df[df['pathogen'] == args.pathogen]
+        print_summary(df, all_pathogens=args.all)
 
 
 if __name__ == "__main__":

@@ -57,7 +57,21 @@ def main(seed: int) -> None:
         n_draw = min(n, len(cell))
         selected.append(cell.sample(n=n_draw, random_state=seed))
 
-    result = pd.concat(selected).reset_index(drop=True)
+    # Always include this specific pfalciparum dataset
+    MANDATORY = {"pathogen": "pfalciparum", "name": "CHEMBL4888485_INHIBITION_%_qt_50.0"}
+    mandatory_row = df[
+        (df["pathogen"] == MANDATORY["pathogen"]) & (df["name"] == MANDATORY["name"])
+    ]
+    if mandatory_row.empty:
+        print(f"[WARN] Mandatory dataset not found: {MANDATORY}")
+    else:
+        selected.append(mandatory_row)
+
+    result = (
+        pd.concat(selected)
+        .drop_duplicates(subset=["pathogen", "name"])
+        .reset_index(drop=True)
+    )
     print(result[["pathogen", "name", "compounds", "ratio"]].to_string())
     out_path = os.path.join(REPO_ROOT, "data", "processed", "01b_selected_datasets.csv")
     result.to_csv(out_path, index=False)

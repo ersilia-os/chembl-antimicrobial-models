@@ -19,3 +19,8 @@ joblib==1.5.1
 # lazy-qsar descriptor extras
 rdkit==2025.9.1
 FPSim2==0.7.3
+# notebooks
+ipykernel==7.2.0
+matplotlib==3.10.8
+seaborn==0.13.2
+stylia==1.0.1
