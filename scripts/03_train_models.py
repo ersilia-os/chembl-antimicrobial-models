@@ -36,7 +36,7 @@ from xgboost import XGBClassifier
 import lazyqsar
 from lazyqsar.descriptors.morgan import MorganFingerprint
 from lazyqsar.qsar import LazyClassifierQSAR
-from lazyqsar.utils.metrics import composite_score
+from lazyqsar.utils.metrics import bedroc_score, composite_score
 
 lazyqsar.set_verbosity(True)
 
@@ -154,12 +154,25 @@ def _ece(y_true: np.ndarray, proba: np.ndarray, n_bins: int = 10) -> float:
     return ece / len(y_true)
 
 
+def _calibration_y(y_true: np.ndarray, proba: np.ndarray) -> str:
+    """Return fraction-of-positives for 10 fixed-width bins; 'nan' for empty bins.
+    x-axis is implicitly np.arange(0, 1, 0.1). Last bin is [0.9, 1.0] (inclusive)."""
+    edges = list(np.arange(0, 1, 0.1)) + [1.0]
+    parts = []
+    for i in range(len(edges) - 1):
+        lo, hi = edges[i], edges[i + 1]
+        mask = (proba >= lo) & (proba <= hi if i == len(edges) - 2 else proba < hi)
+        parts.append(f"{float(y_true[mask].mean()):.4f}" if mask.sum() > 0 else "nan")
+    return ";".join(parts)
+
+
 def _print_summary(
     pathogen: str,
     dataset: str,
     mode: str,
     lazy_auc: float,
     lazy_aupr: float,
+    lazy_bedroc: float,
     aupr_baseline: float,
     sensitivity: float,
     specificity: float,
@@ -188,6 +201,7 @@ def _print_summary(
 
     # Composite
     print(f"\n  Composite (LazyClassifierQSAR)   AUC = {lazy_auc:.4f}   AUPR = {lazy_aupr:.4f} (baseline {aupr_baseline:.4f})"
+          f"   BEDROC = {lazy_bedroc:.4f}"
           f"   fit = {lq_fit_s:.1f}s   predict/10k = {predict_1k_s:.1f}s")
 
     # Baselines
@@ -267,6 +281,7 @@ def _save_run_csv(
     n_neg_test: int,
     lazy_auc: float,
     lazy_aupr: float,
+    lazy_bedroc: float,
     aupr_baseline: float,
     sensitivity: float,
     specificity: float,
@@ -279,6 +294,7 @@ def _save_run_csv(
     brier_baseline: float,
     ece: float,
     prob_stats: dict,
+    calibration_y: str,
 ) -> None:
     """
     Write one row to output/results/03_train_models/{pathogen}_{dataset}_{mode}.csv.
@@ -299,6 +315,10 @@ def _save_run_csv(
                             0.5 = random, 1.0 = perfect. Headline metric.
       aupr_lazy             Average precision (area under PR curve) on the test
                             set. More informative than AUROC for imbalanced data.
+      bedroc_lazy           BEDROC (alpha=20) on the test set. Exponentially
+                            weights early enrichment — actives ranked in the top
+                            ~5% of the list contribute ~80% of the score.
+                            Range [0, 1]; ~0.5 = random; 1 = perfect.
       aupr_baseline         Random AUPR baseline = positive rate (n_pos/n_total).
                             If aupr_lazy ≈ aupr_baseline the model has no skill.
       sensitivity           True positive rate at the optimal decision cutoff
@@ -399,6 +419,7 @@ def _save_run_csv(
         "n_neg_test": n_neg_test,
         "auroc_lazy": round(lazy_auc, 4),
         "aupr_lazy": round(lazy_aupr, 4),
+        "bedroc_lazy": round(lazy_bedroc, 4),
         "aupr_baseline": round(aupr_baseline, 4),
         "sensitivity": round(sensitivity, 4),
         "specificity": round(specificity, 4),
@@ -413,6 +434,7 @@ def _save_run_csv(
         "brier_baseline": round(brier_baseline, 4),
         "ece": round(ece, 4),
         **{k: round(v, 4) for k, v in prob_stats.items()},
+        "calibration_y": calibration_y,
     }
 
     out_path = os.path.join(REPO_ROOT, "output", "results", "03_train_models", f"{pathogen}_{dataset}_{mode}.csv")
@@ -507,9 +529,11 @@ def train_dataset(pathogen: str, dataset: str, mode: str) -> None:
     pos_rate = y_test.mean()
     brier_baseline = pos_rate * (1 - pos_rate)
     ece = _ece(y_test, p1)
+    calibration_y = _calibration_y(y_test, p1)
 
-    # AUPR
+    # AUPR + BEDROC
     lazy_aupr = average_precision_score(y_test, p1)
+    lazy_bedroc = bedroc_score(y_test, p1)
     aupr_baseline = float(pos_rate)
 
     # Probability distribution by class + model decision cutoff
@@ -547,15 +571,16 @@ def train_dataset(pathogen: str, dataset: str, mode: str) -> None:
         "optimal_cutoff": optimal_cutoff,
     }
 
-    _print_summary(pathogen, dataset, mode, lazy_auc, lazy_aupr, aupr_baseline,
+    _print_summary(pathogen, dataset, mode, lazy_auc, lazy_aupr, lazy_bedroc, aupr_baseline,
                    sensitivity, specificity, predict_1k_s, lq_fit_s,
                    baselines, onnx_sizes, diagnostics, brier, brier_baseline, ece,
                    n_pos_train, n_neg_train, n_pos_test, n_neg_test, prob_stats)
     _save_run_csv(pathogen, dataset, mode, len(smiles_train), len(smiles_test),
                   n_pos_train, n_neg_train, n_pos_test, n_neg_test,
-                  lazy_auc, lazy_aupr, aupr_baseline, sensitivity, specificity,
+                  lazy_auc, lazy_aupr, lazy_bedroc, aupr_baseline, sensitivity, specificity,
                   predict_1k_s, lq_fit_s, baselines, onnx_sizes,
-                  diagnostics, brier, brier_baseline, ece, prob_stats)
+                  diagnostics, brier, brier_baseline, ece, prob_stats,
+                  calibration_y)
 
 
 def _run_csv_path(pathogen: str, dataset: str, mode: str) -> str:
