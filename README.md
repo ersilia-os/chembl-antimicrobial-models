@@ -47,9 +47,10 @@ eosvc download --path output
 
 | Step | Script | What it does |
 |------|--------|-------------|
-| 01 | `scripts/01_download_datasets.py` | Downloads representative binary datasets from `chembl-antimicrobial-tasks` outputs |
-| 02 | `scripts/02_add_decoys.py` | Augments active-enriched datasets with ChEMBL decoys where needed |
-| 03 | `scripts/03_train_models.py` | Trains LazyQSAR binary classifiers and saves ONNX models |
+| 01 | `scripts/01_download_datasets.py` | Downloads binary datasets from `chembl-antimicrobial-tasks` outputs; optionally selects a representative subset with `--select_representatives` |
+| 02 | `scripts/02_select_positives.py` | Extracts all active compounds (bin == 1) across every dataset, deduplicates SMILES, and records provenance in `output/results/02_selected_positives.csv` |
+| 03 | `scripts/03_add_decoys.py` | Augments active-enriched datasets with ChEMBL decoys where needed |
+| 04 | `scripts/04_train_models.py` | Trains LazyQSAR binary classifiers and saves ONNX models |
 
 ## Repository structure
 

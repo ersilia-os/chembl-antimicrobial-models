@@ -10,10 +10,15 @@ Files downloaded per pathogen:
   - 20_general_datasets.zip
 
 Produces data/processed/<pathogen>/01_chembl_datasets.csv with all datasets merged.
+Also produces data/processed/01_chembl_datasets_all.csv combining all pathogens.
+
+Optional --select_representatives flag runs stratified sampling across compound-count
+and activity-ratio bins, writing data/processed/01_chembl_datasets_representatives.csv.
 
 Usage:
     python scripts/01_download_datasets.py --pathogen ecoli
     python scripts/01_download_datasets.py --all
+    python scripts/01_download_datasets.py --all --select_representatives [--seed 42]
 """
 
 import argparse
@@ -21,6 +26,7 @@ import os
 import shutil
 import subprocess
 import sys
+from itertools import product
 
 import pandas as pd
 
@@ -53,6 +59,21 @@ FILES = [
     "20_general_datasets.csv",
     "20_general_datasets.zip",
 ]
+
+# (min_compounds, max_compounds, n_samples)
+COMPOUND_BINS = [
+    (100,    1_000,  2),
+    (1_000,  10_000, 2),
+    (10_000, 50_000, 1),
+]
+
+# (min_ratio, max_ratio)
+RATIO_BINS = [
+    (0.01, 0.3),
+    (0.3,  0.5),
+]
+
+MANDATORY_DATASET = {"pathogen": "pfalciparum", "name": "CHEMBL4888485_INHIBITION_%_qt_50.0"}
 
 
 def download_file(remote_path: str, local_path: str) -> bool:
@@ -161,6 +182,45 @@ def print_summary(df: pd.DataFrame, all_pathogens: bool) -> None:
             print(f"  {pathogen}: {count} datasets, {n_cpds:,} compounds")
 
 
+def select_representatives(seed: int) -> None:
+    input_path = os.path.join(REPO_ROOT, "data", "processed", "01_chembl_datasets_all.csv")
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"Input file not found: {input_path}")
+
+    df = pd.read_csv(input_path).dropna(subset=["compounds", "ratio"])
+
+    selected = []
+    for (c_min, c_max, n), (r_min, r_max) in product(COMPOUND_BINS, RATIO_BINS):
+        cell = df[
+            (df["compounds"] >= c_min) & (df["compounds"] < c_max) &
+            (df["ratio"] >= r_min) & (df["ratio"] < r_max)
+        ]
+        if cell.empty:
+            print(f"[WARN] No datasets in compounds=[{c_min},{c_max}) ratio=[{r_min},{r_max})")
+            continue
+        n_draw = min(n, len(cell))
+        selected.append(cell.sample(n=n_draw, random_state=seed))
+
+    mandatory_row = df[
+        (df["pathogen"] == MANDATORY_DATASET["pathogen"]) &
+        (df["name"] == MANDATORY_DATASET["name"])
+    ]
+    if mandatory_row.empty:
+        print(f"[WARN] Mandatory dataset not found: {MANDATORY_DATASET}")
+    else:
+        selected.append(mandatory_row)
+
+    result = (
+        pd.concat(selected)
+        .drop_duplicates(subset=["pathogen", "name"])
+        .reset_index(drop=True)
+    )
+    print(result[["pathogen", "name", "compounds", "ratio"]].to_string())
+    out_path = os.path.join(REPO_ROOT, "data", "processed", "01_chembl_datasets_representatives.csv")
+    result.to_csv(out_path, index=False)
+    print(f"\nSaved {len(result)} datasets to {out_path}")
+
+
 def main(args: argparse.Namespace) -> None:
     pathogens = PATHOGENS if args.all else [args.pathogen]
     for pathogen in pathogens:
@@ -170,6 +230,8 @@ def main(args: argparse.Namespace) -> None:
         if not args.all:
             df = df[df['pathogen'] == args.pathogen]
         print_summary(df, all_pathogens=args.all)
+    if args.select_representatives:
+        select_representatives(args.seed)
 
 
 if __name__ == "__main__":
@@ -187,6 +249,17 @@ if __name__ == "__main__":
         "--all",
         action="store_true",
         help="Download datasets for all supported pathogens.",
+    )
+    parser.add_argument(
+        "--select_representatives",
+        action="store_true",
+        help="After downloading, sample representative datasets into 01_chembl_datasets_representatives.csv.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for representative selection (default: 42).",
     )
     args = parser.parse_args()
     main(args)
