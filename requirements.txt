@@ -1,24 +1,5 @@
 git+https://github.com/ersilia-os/eosvc.git@v0.1.3
-# git+https://github.com/ersilia-os/lazy-qsar.git@d67f66a
--e /home/acomajuncosa/github/lazy-qsar
-# lazy-qsar core
-numpy==2.1.3
-onnxruntime==1.20.1
-pandas==2.3.0
-h5py==3.14.0
-psutil==7.0.0
-rich==14.1.0
-loguru==0.7.3
-# lazy-qsar fit extras
-scikit-learn==1.6.1
-xgboost==3.2.0
-onnxmltools
-onnxconverter-common==1.16.0
-skl2onnx==1.19.1
-joblib==1.5.1
-# lazy-qsar descriptor extras
-rdkit==2025.9.1
-FPSim2==0.7.3
+git+https://github.com/ersilia-os/lazy-qsar.git@v3.0.1
 # notebooks
 ipykernel==7.2.0
 matplotlib==3.10.8
