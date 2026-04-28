@@ -1,26 +1,24 @@
 """
 Step 03 — Set up decoy run environment.
 
-(0) Creates output directories.
+(0) Checks that ersilia_apptainer is available in the project conda env
+    (envs/camm/bin/ersilia_apptainer). The env must be created beforehand:
+        conda env create -f environment.yml --prefix ./envs/camm
 (1) Splits output/results/02_selected_positives.csv into per-split CSVs
     (single 'smiles' column) → output/results/03_positives_splits/split_XXX.csv
-(2) Clones git@github.com:ersilia-os/ersilia-apptainer.git into
-    output/results/03_ersilia_apptainer and installs the latest version
-    into output/results/03_conda_camm/, exposed as ersilia_apptainer_camm.
-(3) Builds the eos3e6s Singularity/Apptainer SIF image
-    → output/results/03_eos3e6s/eos3e6s.sif
-(4) Writes scripts/04_run_decoys.sh — submit with: sbatch scripts/04_run_decoys.sh
+(2) Builds the eos3e6s Singularity/Apptainer SIF image via ersilia_apptainer create
+    → output/results/03_eos3e6s_v1.sif
+(3) Writes scripts/04_run_decoys.sh — submit with: sbatch scripts/04_run_decoys.sh
 
 All steps overwrite existing outputs.
 
 Usage:
     python scripts/03_setup_decoy_run.py
-    python scripts/03_setup_decoy_run.py --positives path/to/other.csv
+    python scripts/03_setup_decoy_run.py --positives path/to/other.csv --version v1.0.0
 """
 
 import argparse
 import os
-import shutil
 import stat
 import subprocess
 
@@ -29,33 +27,30 @@ import pandas as pd
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 MODEL = "eos3e6s"
+CAMM_BIN = os.path.join(REPO_ROOT, "envs", "camm", "bin", "ersilia_apptainer")
+RESULTS_DIR = os.path.join(REPO_ROOT, "output", "results")
 DIRS = {
-    "splits":    os.path.join(REPO_ROOT, "output", "results", "03_positives_splits"),
-    "apptainer": os.path.join(REPO_ROOT, "output", "results", "03_ersilia_apptainer"),
-    "conda_env": os.path.join(REPO_ROOT, "output", "results", "03_conda_camm"),
-    "sif":       os.path.join(REPO_ROOT, "output", "results", f"03_{MODEL}"),
-    "decoys":    os.path.join(REPO_ROOT, "output", "results", "04_decoys"),
-    "logs":      os.path.join(REPO_ROOT, "output", "results", "04_logs"),
+    "splits": os.path.join(RESULTS_DIR, "03_positives_splits"),
+    "decoys": os.path.join(RESULTS_DIR, "04_decoys"),
+    "logs":   os.path.join(RESULTS_DIR, "04_logs"),
 }
 
 
-def _find_conda() -> str:
-    conda = shutil.which("conda") or shutil.which("mamba")
-    if conda:
-        return conda
-    raise RuntimeError(
-        "conda/mamba not found in PATH. Run this script from an active conda environment."
-    )
-
-
 # ---------------------------------------------------------------------------
-# Step 0 — directories
+# Step 0 — sanity check + directories
 # ---------------------------------------------------------------------------
+
+def check_camm_env() -> None:
+    if not os.path.isfile(CAMM_BIN):
+        raise RuntimeError(
+            f"ersilia_apptainer binary not found at {CAMM_BIN}.\n"
+            "Create the project conda env first:\n"
+            "    conda env create -f environment.yml --prefix ./envs/camm"
+        )
+
 
 def make_dirs() -> None:
-    for key, path in DIRS.items():
-        if key == "conda_env":
-            continue  # conda create handles this directory itself
+    for path in DIRS.values():
         os.makedirs(path, exist_ok=True)
 
 
@@ -74,86 +69,38 @@ def split_positives(positives_path: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Step 2 — clone ersilia-apptainer and install into project conda env
+# Step 2 — build SIF image
 # ---------------------------------------------------------------------------
 
-def setup_ersilia_apptainer() -> str:
-    apptainer_dir = DIRS["apptainer"]
-    conda_env_dir = DIRS["conda_env"]
-    camm_bin = os.path.join(conda_env_dir, "bin", "ersilia_apptainer_camm")
-
-    if os.path.exists(apptainer_dir):
-        shutil.rmtree(apptainer_dir)
-    subprocess.run(
-        ["git", "clone", "git@github.com:ersilia-os/ersilia-apptainer.git", apptainer_dir],
-        check=True,
-    )
-    subprocess.run(
-        ["git", "-C", apptainer_dir, "checkout", "a7d8be09df0efc72114ed554f111d25f1f6587cb"],
-        check=True,
-    )
-    print(f"Cloned ersilia-apptainer to {apptainer_dir}")
-
-    conda = _find_conda()
-    if os.path.exists(conda_env_dir):
-        shutil.rmtree(conda_env_dir)
-    subprocess.run(
-        [conda, "create", "--prefix", conda_env_dir, "python=3.11", "--yes", "--quiet"],
-        check=True,
-    )
-    conda_pip = os.path.join(conda_env_dir, "bin", "pip")
-    subprocess.run([conda_pip, "install", apptainer_dir], check=True)
-    # Expose as ersilia_apptainer_camm (relative symlink, same bin/ dir)
-    os.symlink("ersilia_apptainer", camm_bin)
-    print(f"Installed ersilia_apptainer_camm in {conda_env_dir}")
-
-    return camm_bin
-
-
-# ---------------------------------------------------------------------------
-# Step 3 — build SIF image
-# ---------------------------------------------------------------------------
-
-def build_sif() -> None:
-    sif_dir = DIRS["sif"]
-    def_path = os.path.join(sif_dir, f"{MODEL}.def")
-    sif_path = os.path.join(sif_dir, f"{MODEL}.sif")
+def build_sif(version: str) -> str:
+    major = version.split(".")[0]  # e.g. "v1.0.0" → "v1"
+    raw_path = os.path.join(RESULTS_DIR, f"{MODEL}_{major}.sif")
+    sif_path = os.path.join(RESULTS_DIR, f"03_{MODEL}_{major}.sif")
 
     if os.path.exists(sif_path):
         os.remove(sif_path)
 
-    with open(def_path, "w") as f:
-        f.write(f"""Bootstrap: docker
-From: ersiliaos/{MODEL}:latest
-
-%post
-    mkdir -p /opt/ersilia
-    mv /root/bundles /opt/ersilia/bundles
-    mv /root/model /opt/ersilia/model
-    chmod -R 755 /opt/ersilia
-    export ERSILIA_PATH=/opt/ersilia
-
-%environment
-    export ERSILIA_PATH=/opt/ersilia
-""")
-
-    subprocess.run(["singularity", "build", sif_path, def_path], check=True)
-    subprocess.run(["apptainer", "cache", "clean", "-f"])
+    subprocess.run(
+        [CAMM_BIN, "create", "--model", MODEL, "--version", version,
+         "--output-dir", RESULTS_DIR, "--verbose"],
+        check=True,
+    )
+    os.rename(raw_path, sif_path)
     print(f"Built SIF image: {sif_path}")
+    return sif_path
 
 
 # ---------------------------------------------------------------------------
-# Step 4 — write 04_run_decoys.sh
+# Step 3 — write 04_run_decoys.sh
 # ---------------------------------------------------------------------------
 
-def write_run_script(n_splits: int, camm_bin: str) -> None:
+def write_run_script(n_splits: int, sif_path: str) -> None:
     script_path = os.path.join(ROOT, "04_run_decoys.sh")
     max_idx = n_splits - 1
 
     log_dir = DIRS["logs"]
     inp_dir = DIRS["splits"]
     res_dir = DIRS["decoys"]
-    app_dir = DIRS["sif"]
 
     # All static paths are resolved by Python f-strings at write time.
     # Only genuine SLURM runtime variables remain as shell variables.
@@ -165,7 +112,7 @@ def write_run_script(n_splits: int, camm_bin: str) -> None:
 #SBATCH --time=100:00:00
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
-#SBATCH --array=0-{max_idx}%10
+#SBATCH --array=0-{max_idx}%40
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=8G
 #SBATCH --output={log_dir}/%x_%a.out
@@ -180,8 +127,8 @@ export PYTHONDONTWRITEBYTECODE=1
 
 alpha_padded="$(printf "%03d" "$SLURM_ARRAY_TASK_ID")"
 
-{camm_bin} run \\
-  --sif "{app_dir}/{MODEL}.sif" \\
+{CAMM_BIN} run \\
+  --sif "{sif_path}" \\
   --input "{inp_dir}/split_${{alpha_padded}}.csv" \\
   --output "{res_dir}/{MODEL}_${{alpha_padded}}.csv" \\
   --verbose
@@ -198,13 +145,12 @@ alpha_padded="$(printf "%03d" "$SLURM_ARRAY_TASK_ID")"
 # Main
 # ---------------------------------------------------------------------------
 
-def main(positives_path: str) -> None:
+def main(positives_path: str, version: str) -> None:
+    check_camm_env()
     make_dirs()
-
     n_splits = split_positives(positives_path)
-    camm_bin = setup_ersilia_apptainer()
-    build_sif()
-    write_run_script(n_splits, camm_bin)
+    sif_path = build_sif(version)
+    write_run_script(n_splits, sif_path)
 
 
 if __name__ == "__main__":
@@ -216,5 +162,10 @@ if __name__ == "__main__":
         default=os.path.join(REPO_ROOT, "output", "results", "02_selected_positives.csv"),
         help="Path to 02_selected_positives.csv (default: output/results/02_selected_positives.csv).",
     )
+    parser.add_argument(
+        "--version",
+        default="v1.0.0",
+        help="DockerHub version tag for the model image (default: v1.0.0).",
+    )
     args = parser.parse_args()
-    main(args.positives)
+    main(args.positives, args.version)

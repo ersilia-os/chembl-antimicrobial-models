@@ -4,7 +4,7 @@
 #SBATCH --time=100:00:00
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
-#SBATCH --array=0-464%10
+#SBATCH --array=0-464%40
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=8G
 #SBATCH --output=/aloy/home/acomajuncosa/Ersilia/chembl-antimicrobial-models/output/results/04_logs/%x_%a.out
@@ -19,8 +19,8 @@ export PYTHONDONTWRITEBYTECODE=1
 
 alpha_padded="$(printf "%03d" "$SLURM_ARRAY_TASK_ID")"
 
-/aloy/home/acomajuncosa/Ersilia/chembl-antimicrobial-models/output/results/03_conda_camm/bin/ersilia_apptainer_camm run \
-  --sif "/aloy/home/acomajuncosa/Ersilia/chembl-antimicrobial-models/output/results/03_eos3e6s/eos3e6s.sif" \
+/aloy/home/acomajuncosa/Ersilia/chembl-antimicrobial-models/envs/camm/bin/ersilia_apptainer run \
+  --sif "/aloy/home/acomajuncosa/Ersilia/chembl-antimicrobial-models/output/results/03_eos3e6s_v1.sif" \
   --input "/aloy/home/acomajuncosa/Ersilia/chembl-antimicrobial-models/output/results/03_positives_splits/split_${alpha_padded}.csv" \
   --output "/aloy/home/acomajuncosa/Ersilia/chembl-antimicrobial-models/output/results/04_decoys/eos3e6s_${alpha_padded}.csv" \
   --verbose

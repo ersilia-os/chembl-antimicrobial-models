@@ -1,0 +1,17 @@
+name: camm
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - rdkit=2025.03.6
+  - pandas
+  - matplotlib=3.10.8
+  - seaborn=0.13.2
+  - ipykernel=7.1.0
+  - tqdm
+  - pip
+  - pip:
+      - git+https://github.com/ersilia-os/eosvc.git@v0.1.3
+      - git+https://github.com/ersilia-os/lazy-qsar.git@v3.0.1
+      - git+https://github.com/ersilia-os/ersilia-apptainer.git@a7d8be09df0efc72114ed554f111d25f1f6587cb
+      - stylia==1.0.1
