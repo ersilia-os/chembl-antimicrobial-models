@@ -1,18 +1,18 @@
 """
-Step 07 — Train LazyQSAR models for each dataset.
+Step 08 — Train LazyQSAR models for each dataset.
 
-Intended to run as a SLURM array job via 07_run_models.sh, with one task
+Intended to run as a SLURM array job via 08_run_models.sh, with one task
 per row in 06_datasets_metadata.csv.
 
 For each dataset (identified by SLURM_ARRAY_TASK_ID):
   1. Loads the prepared CSV from output/results/06_datasets/{pathogen}/{name}.csv
   2. Runs 5-fold stratified cross-validation and records AUROC, AUPRC, and their
-     prevalence/random baselines in output/results/07_reports/{pathogen}/{name}.csv
+     prevalence/random baselines in output/results/08_reports/{pathogen}/{name}.csv
   3. Trains a final model on all data and saves it to
-     output/results/07_models/{pathogen}/{name}/
+     output/results/08_models/{pathogen}/{name}/
 
 Usage:
-    python scripts/07_run_models.py <task_id>
+    python scripts/08_run_models.py <task_id>
     # task_id: 0-based index into 06_datasets_metadata.csv
 """
 
@@ -31,8 +31,8 @@ REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
 METADATA_PATH = os.path.join(REPO_ROOT, "output", "results", "06_datasets_metadata.csv")
 DATASETS_DIR  = os.path.join(REPO_ROOT, "output", "results", "06_datasets")
-REPORTS_DIR   = os.path.join(REPO_ROOT, "output", "results", "07_reports")
-MODELS_DIR    = os.path.join(REPO_ROOT, "output", "results", "07_models")
+REPORTS_DIR   = os.path.join(REPO_ROOT, "output", "results", "08_reports")
+MODELS_DIR    = os.path.join(REPO_ROOT, "output", "results", "08_models")
 
 N_FOLDS = 5
 MODE    = "slow"
@@ -66,10 +66,11 @@ def run(task_id: int) -> None:
 
         model = LazyClassifierQSAR(mode=MODE)
         model.fit(smiles_list=smiles_train, y=y_train)
-        scores = model.predict_proba(smiles_list=smiles_test)[:, 1]
+        scores_proba = model.predict_proba(smiles_list=smiles_test)[:, 1]
+        scores_rank  = model.predict_rank(smiles_list=smiles_test)[:, 1]
 
-        auroc          = roc_auc_score(y_test, scores)
-        auprc          = average_precision_score(y_test, scores)
+        auroc          = roc_auc_score(y_test, scores_proba)
+        auprc          = average_precision_score(y_test, scores_proba)
         baseline_auroc = 0.5
         baseline_auprc = sum(y_test) / len(y_test)
 
@@ -79,21 +80,32 @@ def run(task_id: int) -> None:
             for desc in DESCRIPTOR_TYPES[MODE]
         }
 
+        y_arr = np.array(y_test)
+
+        def fmt(arr, mask):
+            return ";".join(str(round(float(v), 3)) for v in arr[mask])
+
         records.append({
-            "pathogen":        pathogen,
-            "name":            name,
-            "fold":            fold,
-            "compounds_train": len(y_train),
-            "compounds_test":  len(y_test),
-            "positives_train": sum(y_train),
-            "positives_test":  sum(y_test),
-            "auroc":           round(auroc, 4),
-            "auprc":           round(auprc, 4),
-            "baseline_auroc":  baseline_auroc,
-            "baseline_auprc":  round(baseline_auprc, 4),
+            "pathogen":               pathogen,
+            "name":                   name,
+            "fold":                   fold,
+            "compounds_train":        len(y_train),
+            "compounds_test":         len(y_test),
+            "positives_train":        sum(y_train),
+            "positives_test":         sum(y_test),
+            "auroc":                  round(auroc, 4),
+            "auprc":                  round(auprc, 4),
+            "baseline_auroc":         baseline_auroc,
+            "baseline_auprc":         round(baseline_auprc, 4),
             **oof_per_descriptor,
+            "predict_proba_actives":  fmt(scores_proba, y_arr == 1),
+            "predict_proba_inactives":fmt(scores_proba, y_arr == 0),
+            "predict_rank_actives":   fmt(scores_rank,  y_arr == 1),
+            "predict_rank_inactives": fmt(scores_rank,  y_arr == 0),
         })
         print(f"  fold {fold}: auroc={auroc:.3f}  auprc={auprc:.3f}  (baseline auprc={baseline_auprc:.3f})")
+
+        
 
     report_path = os.path.join(REPORTS_DIR, pathogen, f"{name}.csv")
     os.makedirs(os.path.dirname(report_path), exist_ok=True)
@@ -112,6 +124,6 @@ def run(task_id: int) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python 07_run_models.py <task_id>", file=sys.stderr)
+        print("Usage: python 08_run_models.py <task_id>", file=sys.stderr)
         sys.exit(1)
     run(int(sys.argv[1]))

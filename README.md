@@ -15,7 +15,7 @@ conda activate ./envs/camm
 
 > **Note:** Environment creation may take 5–10 minutes.
 
-The `--prefix ./envs/camm` flag places the environment inside the repository directory. This is intentional: on HPC clusters, only the shared filesystem is visible to compute nodes, so the environment must live alongside the code rather than in the default local conda path. Two pipeline steps (04 and 07) are designed to run directly on the cluster to allow for parallelization — see the [Pipeline overview](#pipeline-overview) section below.
+The `--prefix ./envs/camm` flag places the environment inside the repository directory. This is intentional: on HPC clusters, only the shared filesystem is visible to compute nodes, so the environment must live alongside the code rather than in the default local conda path. Two pipeline steps (04 and 08) are designed to run directly on the cluster to allow for parallelization — see the [Pipeline overview](#pipeline-overview) section below.
 
 ### Data download
 
@@ -55,10 +55,11 @@ eosvc download --path output
 | 03 | `scripts/03_setup_decoy_run.py` | Splits positives into batches, builds the `eos3e6s` Apptainer SIF image via `ersilia_apptainer create` (accepts `--version`, default `v1.0.0`), and prints the exact `sbatch` command to submit step 04; requires `envs/camm` from the Setup step |
 | 04 | `scripts/04_run_decoys.sh` | Static SLURM array job script; submit using the command printed by step 03 (`sbatch --chdir=<repo_root> --array=0-N%M scripts/04_run_decoys.sh`); runs `eos3e6s` on each input split via `ersilia_apptainer` |
 | 05 | `scripts/05_aggregate_decoys.py` | Streams all per-split CSVs into `output/results/05_eos3e6s_v1.csv`; `--cleanup` removes intermediate directories (splits, decoys, logs) only if all expected splits are present |
-| 06 | `scripts/06_prepare_datasets.py` | Extracts raw compound CSVs from per-pathogen zip archives into `output/results/06_datasets/{pathogen}/{name}.csv` (columns: `smiles, bin`); augments datasets with active ratio > 0.5 with decoy compounds targeting ratio 0.1; saves enriched metadata to `output/results/06_datasets_metadata.csv`; prints the exact `sbatch` command to submit step 07 |
-| 07 | `scripts/07_run_models.sh` | Static SLURM array job script; submit using the command printed by step 06 (`sbatch --chdir=<repo_root> --array=0-N%20 scripts/07_run_models.sh`); trains a LazyQSAR model for each dataset |
+| 06 | `scripts/06_prepare_datasets.py` | Extracts raw compound CSVs from per-pathogen zip archives into `output/results/06_datasets/{pathogen}/{name}.csv` (columns: `smiles, bin`); augments datasets with active ratio > 0.5 with decoy compounds targeting ratio 0.1; saves enriched metadata to `output/results/06_datasets_metadata.csv` |
+| 07 | `scripts/07_download_weights.py` | Downloads LazyQSAR descriptor weights (cddd, chemeleon, clamp) to `output/07_weights/.lazyqsar/`; run once from the login node before submitting step 08; accepts `--path` to override the cache location; prints the exact `sbatch` command to submit step 08 |
+| 08 | `scripts/08_run_models.sh` | Static SLURM array job script; submit using the command printed by step 07 (`sbatch --chdir=<repo_root> --array=0-N%20 scripts/08_run_models.sh`); trains a LazyQSAR model for each dataset |
 
-Steps 04 and 07 are static SLURM scripts designed to run on an HPC cluster; all other scripts run locally.
+Steps 04 and 08 are static SLURM scripts designed to run on an HPC cluster; all other scripts run locally.
 
 ## Repository structure
 
@@ -71,10 +72,11 @@ chembl-antimicrobial-models/
 │   └── processed/              # Merged dataset metadata per pathogen
 ├── envs/
 │   └── camm/                   # Project conda env (gitignored; created with --prefix)
-├── scripts/                    # Pipeline scripts (01–07)
+├── scripts/                    # Pipeline scripts (01–08)
 ├── notebooks/                  # Exploratory notebooks
 └── output/
     └── results/
+        ├── 07_weights/                      # LazyQSAR descriptor weight cache (created by step 07)
         ├── 02_selected_positives.csv        # Unique active SMILES with provenance
         ├── 03_positives_splits/             # Per-split input CSVs (split_XXX.csv) [removed by step 05 --cleanup]
         ├── 03_eos3e6s_v1.sif                # Apptainer SIF image
@@ -83,7 +85,9 @@ chembl-antimicrobial-models/
         ├── 05_eos3e6s_v1.csv                # Aggregated eos3e6s predictions
         ├── 06_datasets/                     # Per-pathogen compound CSVs (smiles, bin)
         ├── 06_datasets_metadata.csv         # Enriched metadata with decoys, final_ratio, and final_compounds columns
-        └── 07_logs/                         # SLURM job logs for model training
+        ├── 08_reports/                      # Per-dataset CV reports (one CSV per dataset)
+        ├── 08_models/                       # Trained LazyQSAR models (one dir per dataset)
+        └── 08_logs/                         # SLURM job logs for model training
 ```
 
 ## About the Ersilia Open Source Initiative

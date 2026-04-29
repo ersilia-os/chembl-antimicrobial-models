@@ -70,7 +70,8 @@ def load_decoys() -> dict[str, list[str]]:
             candidates if len(candidates) <= N_DECOYS
             else random.sample(candidates, N_DECOYS)
         )
-    print(f"Loaded decoys: {len(result)} compounds with 1–{N_DECOYS} decoys each")
+    counts = [len(v) for v in result.values()]
+    print(f"Loaded decoys: {len(result)} compounds with {min(counts)}–{max(counts)} decoys each")
     return result
 
 
@@ -173,15 +174,6 @@ def augment_datasets(metadata: pd.DataFrame, decoys: dict[str, list[str]]) -> pd
 META_OUT_PATH = os.path.join(REPO_ROOT, "output", "results", "06_datasets_metadata.csv")
 
 
-def print_sbatch_command(n_datasets: int) -> None:
-    max_idx = n_datasets - 1
-    script_path = os.path.join(ROOT, "07_run_models.sh")
-    print(
-        f"\nSetup complete. Submit the array job with:\n"
-        f"    sbatch --chdir={REPO_ROOT} --array=0-{max_idx}%20 {script_path}"
-    )
-
-
 def main(metadata_path: str) -> None:
     metadata = load_metadata(metadata_path)
     decoys = load_decoys()
@@ -189,7 +181,6 @@ def main(metadata_path: str) -> None:
     enriched = augment_datasets(metadata, decoys)
     enriched.to_csv(META_OUT_PATH, index=False)
     print(f"Saved enriched metadata to {META_OUT_PATH}")
-    print_sbatch_command(len(enriched))
 
 
 if __name__ == "__main__":
