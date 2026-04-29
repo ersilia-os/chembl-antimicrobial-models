@@ -55,9 +55,10 @@ eosvc download --path output
 | 03 | `scripts/03_setup_decoy_run.py` | Splits positives into batches, builds the `eos3e6s` Apptainer SIF image via `ersilia_apptainer create` (accepts `--version`, default `v1.0.0`), and prints the exact `sbatch` command to submit step 04; requires `envs/camm` from the Setup step |
 | 04 | `scripts/04_run_decoys.sh` | Static SLURM array job script; submit using the command printed by step 03 (`sbatch --chdir=<repo_root> --array=0-N%40 scripts/04_run_decoys.sh`); runs `eos3e6s` on each input split via `ersilia_apptainer` |
 | 05 | `scripts/05_aggregate_decoys.py` | Streams all per-split CSVs into `output/results/05_eos3e6s_v1.csv`; `--cleanup` removes intermediate directories (splits, decoys, logs) only if all expected splits are present |
-| 06 | `scripts/06_prepare_datasets.py` | Extracts raw compound CSVs from per-pathogen zip archives into `output/results/06_datasets/{pathogen}/{name}.csv` (columns: `smiles, bin`); augments datasets with active ratio > 0.5 with decoy compounds targeting ratio 0.1; saves enriched metadata to `output/results/06_datasets_metadata.csv` |
+| 06 | `scripts/06_prepare_datasets.py` | Extracts raw compound CSVs from per-pathogen zip archives into `output/results/06_datasets/{pathogen}/{name}.csv` (columns: `smiles, bin`); augments datasets with active ratio > 0.5 with decoy compounds targeting ratio 0.1; saves enriched metadata to `output/results/06_datasets_metadata.csv`; prints the exact `sbatch` command to submit step 07 |
+| 07 | `scripts/07_run_models.sh` | Static SLURM array job script; submit using the command printed by step 06 (`sbatch --chdir=<repo_root> --array=0-N%20 scripts/07_run_models.sh`); trains a LazyQSAR model for each dataset |
 
-Steps 03–04 require [Singularity/Apptainer](https://apptainer.org) and are designed to run on an HPC cluster with SLURM.
+Steps 04 and 07 are static SLURM scripts designed to run on an HPC cluster; all other scripts run locally.
 
 ## Repository structure
 
@@ -70,18 +71,19 @@ chembl-antimicrobial-models/
 │   └── processed/              # Merged dataset metadata per pathogen
 ├── envs/
 │   └── camm/                   # Project conda env (gitignored; created with --prefix)
-├── scripts/                    # Pipeline scripts (01–06)
+├── scripts/                    # Pipeline scripts (01–07)
 ├── notebooks/                  # Exploratory notebooks
 └── output/
     └── results/
         ├── 02_selected_positives.csv        # Unique active SMILES with provenance
-        ├── 03_positives_splits/             # Per-split input CSVs (split_XXX.csv)
+        ├── 03_positives_splits/             # Per-split input CSVs (split_XXX.csv) [removed by step 05 --cleanup]
         ├── 03_eos3e6s_v1.sif                # Apptainer SIF image
-        ├── 04_decoys/                       # eos3e6s output CSVs per split
-        ├── 04_logs/                         # SLURM job logs
+        ├── 04_decoys/                       # eos3e6s output CSVs per split [removed by step 05 --cleanup]
+        ├── 04_logs/                         # SLURM job logs for decoy generation [removed by step 05 --cleanup]
         ├── 05_eos3e6s_v1.csv                # Aggregated eos3e6s predictions
         ├── 06_datasets/                     # Per-pathogen compound CSVs (smiles, bin)
-        └── 06_datasets_metadata.csv         # Enriched metadata with decoys, final_ratio, and final_compounds columns
+        ├── 06_datasets_metadata.csv         # Enriched metadata with decoys, final_ratio, and final_compounds columns
+        └── 07_logs/                         # SLURM job logs for model training
 ```
 
 ## About the Ersilia Open Source Initiative

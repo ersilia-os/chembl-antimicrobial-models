@@ -172,6 +172,15 @@ def augment_datasets(metadata: pd.DataFrame, decoys: dict[str, list[str]]) -> pd
 META_OUT_PATH = os.path.join(REPO_ROOT, "output", "results", "06_datasets_metadata.csv")
 
 
+def print_sbatch_command(n_datasets: int) -> None:
+    max_idx = n_datasets - 1
+    script_path = os.path.join(ROOT, "07_run_models.sh")
+    print(
+        f"\nSetup complete. Submit the array job with:\n"
+        f"    sbatch --chdir={REPO_ROOT} --array=0-{max_idx}%20 {script_path}"
+    )
+
+
 def main(metadata_path: str) -> None:
     metadata = load_metadata(metadata_path)
     decoys = load_decoys()
@@ -179,6 +188,7 @@ def main(metadata_path: str) -> None:
     enriched = augment_datasets(metadata, decoys)
     enriched.to_csv(META_OUT_PATH, index=False)
     print(f"Saved enriched metadata to {META_OUT_PATH}")
+    print_sbatch_command(len(enriched))
 
 
 if __name__ == "__main__":
