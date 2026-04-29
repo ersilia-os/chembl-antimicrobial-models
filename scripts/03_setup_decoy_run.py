@@ -8,7 +8,7 @@ Step 03 — Set up decoy run environment.
     (single 'smiles' column) → output/results/03_positives_splits/split_XXX.csv
 (2) Builds the eos3e6s Singularity/Apptainer SIF image via ersilia_apptainer create
     → output/results/03_eos3e6s_v1.sif
-(3) Writes scripts/04_run_decoys.sh — submit with: sbatch scripts/04_run_decoys.sh
+(3) Prints the sbatch command to submit scripts/04_run_decoys.sh
 
 All steps overwrite existing outputs.
 
@@ -19,7 +19,6 @@ Usage:
 
 import argparse
 import os
-import stat
 import subprocess
 
 import pandas as pd
@@ -91,54 +90,16 @@ def build_sif(version: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Step 3 — write 04_run_decoys.sh
+# Step 3 — print sbatch command
 # ---------------------------------------------------------------------------
 
-def write_run_script(n_splits: int, sif_path: str) -> None:
-    script_path = os.path.join(ROOT, "04_run_decoys.sh")
+def print_sbatch_command(n_splits: int) -> None:
     max_idx = n_splits - 1
-
-    log_dir = DIRS["logs"]
-    inp_dir = DIRS["splits"]
-    res_dir = DIRS["decoys"]
-
-    # All static paths are resolved by Python f-strings at write time.
-    # Only genuine SLURM runtime variables remain as shell variables.
-    # Submit with: sbatch scripts/04_run_decoys.sh
-    content = f"""\
-#!/bin/bash
-#SBATCH --job-name=camm-{MODEL}
-#SBATCH --chdir={REPO_ROOT}
-#SBATCH --time=100:00:00
-#SBATCH --ntasks=1
-#SBATCH --nodes=1
-#SBATCH --array=0-{max_idx}%40
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=8G
-#SBATCH --output={log_dir}/%x_%a.out
-#SBATCH --partition=spot_cpu
-#SBATCH --nodelist=irbccn16,irbccn41,irbccn42
-#SBATCH --requeue
-
-export SINGULARITYENV_LD_LIBRARY_PATH=$LD_LIBRARY_PATH
-export SINGULARITY_BINDPATH="/home/sbnb:/aloy/home,/data/sbnb/data:/aloy/data,/data/sbnb/scratch:/aloy/scratch"
-export LD_LIBRARY_PATH=/apps/manual/software/CUDA/11.6.1/lib64:/apps/manual/software/CUDA/11.6.1/targets/x86_64-linux/lib:/apps/manual/software/CUDA/11.6.1/extras/CUPTI/lib64/:/apps/manual/software/CUDA/11.6.1/nvvm/lib64/:$LD_LIBRARY_PATH
-export PYTHONDONTWRITEBYTECODE=1
-
-alpha_padded="$(printf "%03d" "$SLURM_ARRAY_TASK_ID")"
-
-{CAMM_BIN} run \\
-  --sif "{sif_path}" \\
-  --input "{inp_dir}/split_${{alpha_padded}}.csv" \\
-  --output "{res_dir}/{MODEL}_${{alpha_padded}}.csv" \\
-  --verbose
-"""
-
-    with open(script_path, "w") as f:
-        f.write(content)
-
-    os.chmod(script_path, os.stat(script_path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    print(f"Wrote run script: {script_path}")
+    script_path = os.path.join(ROOT, "04_run_decoys.sh")
+    print(
+        f"\nSetup complete. Submit the array job with:\n"
+        f"    sbatch --chdir={REPO_ROOT} --array=0-{max_idx}%40 {script_path}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +110,8 @@ def main(positives_path: str, version: str) -> None:
     check_camm_env()
     make_dirs()
     n_splits = split_positives(positives_path)
-    sif_path = build_sif(version)
-    write_run_script(n_splits, sif_path)
+    build_sif(version)
+    print_sbatch_command(n_splits)
 
 
 if __name__ == "__main__":
