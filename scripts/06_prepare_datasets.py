@@ -40,7 +40,7 @@ METADATA_PATH = os.path.join(REPO_ROOT, "data", "processed", "01_chembl_datasets
 DECOYS_PATH   = os.path.join(REPO_ROOT, "output", "results", "05_eos3e6s_v1.csv")
 RAW_DIR       = os.path.join(REPO_ROOT, "data", "raw")
 OUT_DIR       = os.path.join(REPO_ROOT, "output", "results", "06_datasets")
-N_DECOYS      = 10
+N_DECOYS      = 20
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +58,7 @@ def load_metadata(metadata_path: str) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def load_decoys() -> dict[str, list[str]]:
+    print("Loading decoy data (this may take a moment)...")
     df = pd.read_csv(DECOYS_PATH)
     decoy_cols = [c for c in df.columns if c not in ("key", "input")]
     result = {}
