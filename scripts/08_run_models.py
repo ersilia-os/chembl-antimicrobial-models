@@ -22,6 +22,7 @@ import sys
 import numpy as np
 import pandas as pd
 from sklearn.metrics import average_precision_score, roc_auc_score
+from lazyqsar.utils.metrics import bedroc_score, bedroc_random_baseline
 from sklearn.model_selection import StratifiedKFold
 
 import string
@@ -103,10 +104,12 @@ def run(task_id: int) -> None:
         scores_proba = model.predict_proba(smiles_list=smiles_test)[:, 1]
         scores_rank  = model.predict_rank(smiles_list=smiles_test)[:, 1]
 
-        auroc          = roc_auc_score(y_test, scores_proba)
-        auprc          = average_precision_score(y_test, scores_proba)
-        baseline_auroc = 0.5
-        baseline_auprc = sum(y_test) / len(y_test)
+        auroc           = roc_auc_score(y_test, scores_rank)
+        auprc           = average_precision_score(y_test, scores_rank)
+        baseline_auroc  = 0.5
+        baseline_auprc  = sum(y_test) / len(y_test)
+        bedroc          = bedroc_score(np.array(y_test), scores_rank)
+        baseline_bedroc = bedroc_random_baseline(np.array(y_test))
 
         oof_auc_map = dict(zip(model.descriptor_types, model.oof_aucs_))
         oof_per_descriptor = {
@@ -134,6 +137,8 @@ def run(task_id: int) -> None:
             "auprc":                  round(auprc, 4),
             "baseline_auroc":         baseline_auroc,
             "baseline_auprc":         round(baseline_auprc, 4),
+            "bedroc":                 round(bedroc, 4),
+            "baseline_bedroc":        round(baseline_bedroc, 4),
             "num_batches":            num_batches,
             **oof_per_descriptor,
             "predict_proba_actives":  fmt(scores_proba, y_arr == 1),
@@ -141,7 +146,7 @@ def run(task_id: int) -> None:
             "predict_rank_actives":   fmt(scores_rank,  y_arr == 1),
             "predict_rank_inactives": fmt(scores_rank,  y_arr == 0),
         })
-        print(f"  fold {fold}: auroc={auroc:.3f}  auprc={auprc:.3f}  (baseline auprc={baseline_auprc:.3f})")
+        print(f"  fold {fold}: auroc={auroc:.3f}  auprc={auprc:.3f}  bedroc={bedroc:.3f}  (baseline auprc={baseline_auprc:.3f}  baseline bedroc={baseline_bedroc:.3f})")
 
         
 
