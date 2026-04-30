@@ -26,20 +26,12 @@ N_FOLDS      = 5
 DESCRIPTORS  = ["cddd", "chemeleon", "clamp", "morgan", "rdkit"]
 
 
-def _fmt_compounds(n: int) -> str:
-    k = n / 1000
-    if k < 10:
-        return f"{k:.1f}k"
-    return f"{round(k):.0f}k"
-
-
 def _model_name(mrow: pd.Series, counter: int) -> str:
-    label_type = "individual" if mrow["label"] in ("A", "B") else "merged"
+    label_map = {"A": "individual", "B": "individual", "M": "merged", "G": "general"}
+    label_type = label_map[mrow["label"]]
     parts = [
-        str(counter),
         label_type,
-        mrow["activity_type"],
-        _fmt_compounds(int(mrow["compounds"])),
+        mrow["activity_type"].lower(),
     ]
     if int(mrow["decoys"]) > 0:
         parts.append("decoys")
@@ -135,6 +127,23 @@ def main() -> None:
     if not records:
         print("No completed datasets found.")
         return
+
+    # Deduplicate model_name within each pathogen: append _a, _b, ... for clashes
+    from collections import Counter as _Counter
+    import string as _string
+    seen: dict[tuple, int] = {}
+    for rec in records:
+        key = (rec["pathogen"], rec["model_name"])
+        seen[key] = seen.get(key, 0) + 1
+
+    counts: dict[tuple, int] = {}
+    suffixes = list(_string.ascii_lowercase)
+    for rec in records:
+        key = (rec["pathogen"], rec["model_name"])
+        if seen[key] > 1:
+            n = counts.get(key, 0)
+            rec["model_name"] = f"{rec['model_name']}_{suffixes[n]}"
+            counts[key] = n + 1
 
     pd.DataFrame(records).to_csv(OUT_PATH, index=False)
     print(f"\n{len(records)}/{n_total} datasets → {OUT_PATH}")
