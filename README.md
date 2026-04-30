@@ -58,6 +58,7 @@ eosvc download --path output
 | 06 | `scripts/06_prepare_datasets.py` | Extracts raw compound CSVs from per-pathogen zip archives into `output/results/06_datasets/{pathogen}/{name}.csv` (columns: `smiles, bin`); augments datasets with active ratio > 0.5 with decoy compounds targeting ratio 0.1; saves enriched metadata to `output/results/06_datasets_metadata.csv` |
 | 07 | `scripts/07_download_weights.py` | Downloads LazyQSAR descriptor weights (cddd, chemeleon, clamp) to `output/results/07_weights/.lazyqsar/`; run once from the login node before submitting step 08; accepts `--path` to override the cache location; prints two separate `sbatch` commands — one for small datasets (≤20k compounds, 16 GB) and one for large datasets (>20k compounds, 64 GB) |
 | 08 | `scripts/08_run_models.sh` | Static SLURM array job script; submit using the commands printed by step 07; trains a LazyQSAR model for each dataset and saves CV reports and the final model |
+| 09 | `scripts/09_aggregate_reports.py` | Concatenates all per-dataset CV report CSVs from `output/results/08_reports/` into a single `output/results/09_reports.csv` |
 
 Steps 04 and 08 are static SLURM scripts designed to run on an HPC cluster; all other scripts run locally.
 
@@ -72,7 +73,7 @@ chembl-antimicrobial-models/
 │   └── processed/              # Merged dataset metadata per pathogen
 ├── envs/
 │   └── camm/                   # Project conda env (gitignored; created with --prefix)
-├── scripts/                    # Pipeline scripts (01–08)
+├── scripts/                    # Pipeline scripts (01–09)
 ├── notebooks/                  # Exploratory notebooks
 └── output/
     └── results/
@@ -87,7 +88,8 @@ chembl-antimicrobial-models/
         ├── 07_weights/                      # LazyQSAR descriptor weight cache (created by step 07)
         ├── 08_reports/                      # Per-dataset CV reports (one CSV per dataset)
         ├── 08_models/                       # Trained LazyQSAR models (one dir per dataset)
-        └── 08_logs/                         # SLURM job logs for model training
+        ├── 08_logs/                         # SLURM job logs for model training
+        └── 09_reports.csv                   # Aggregated CV reports (all datasets)
 ```
 
 ## About the Ersilia Open Source Initiative
