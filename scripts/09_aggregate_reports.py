@@ -1,38 +1,83 @@
 """
-Step 09 — Aggregate per-dataset CV reports into a single file.
+Step 09 — Aggregate per-dataset CV reports into a single summarised file.
 
-Reads all CSVs from output/results/08_reports/ and concatenates them into
-output/results/09_reports.csv.
+Iterates over datasets from 06_datasets_metadata.csv, validates that all 5
+folds are present, and writes one row per dataset to 09_reports.csv.
 
 Usage:
     python scripts/09_aggregate_reports.py
 """
 
-import glob
 import os
 
+import numpy as np
 import pandas as pd
-from tqdm import tqdm
 
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
-IN_DIR   = os.path.join(REPO_ROOT, "output", "results", "08_reports")
-OUT_PATH = os.path.join(REPO_ROOT, "output", "results", "09_reports.csv")
+METADATA_PATH = os.path.join(REPO_ROOT, "output", "results", "06_datasets_metadata.csv")
+REPORTS_DIR   = os.path.join(REPO_ROOT, "output", "results", "08_reports")
+OUT_PATH      = os.path.join(REPO_ROOT, "output", "results", "09_reports.csv")
+
+N_FOLDS      = 5
+DESCRIPTORS  = ["cddd", "chemeleon", "clamp", "morgan", "rdkit"]
+
+
+def aggregate(df: pd.DataFrame, pathogen: str, name: str) -> dict:
+    row = {"pathogen": pathogen, "name": name}
+
+    row["n_compounds"] = int(df["compounds_test"].sum())
+    row["n_positives"] = int(df["positives_test"].sum())
+
+    for col in ("auroc", "auprc", "baseline_auprc"):
+        row[f"{col}_mean"] = round(df[col].mean(), 4)
+        row[f"{col}_std"]  = round(df[col].std(), 4)
+
+    for desc in DESCRIPTORS:
+        col = f"oof_auc_{desc}"
+        vals = df[col].dropna()
+        if vals.empty:
+            row[f"{col}_mean"] = np.nan
+            row[f"{col}_std"]  = np.nan
+        else:
+            row[f"{col}_mean"] = round(vals.mean(), 4)
+            row[f"{col}_std"]  = round(vals.std(), 4)
+
+    row["predict_rank_actives"]   = ";".join(df["predict_rank_actives"].tolist())
+    row["predict_rank_inactives"] = ";".join(df["predict_rank_inactives"].tolist())
+
+    return row
 
 
 def main() -> None:
-    files = sorted(glob.glob(os.path.join(IN_DIR, "**", "*.csv"), recursive=True))
-    if not files:
-        print(f"No report CSVs found in {IN_DIR}")
+    meta = pd.read_csv(METADATA_PATH)
+    n_total = len(meta)
+    records = []
+
+    for i, mrow in enumerate(meta.itertuples(), start=1):
+        pathogen, name = mrow.pathogen, mrow.name
+        prefix = f"[{i}/{n_total}]"
+
+        report_path = os.path.join(REPORTS_DIR, pathogen, f"{name}.csv")
+        if not os.path.exists(report_path):
+            print(f"{prefix} [WARN] {pathogen}/{name}: report not found, skipping")
+            continue
+
+        df = pd.read_csv(report_path)
+        if len(df) < N_FOLDS:
+            print(f"{prefix} [WARN] {pathogen}/{name}: only {len(df)}/{N_FOLDS} folds complete, skipping")
+            continue
+
+        records.append(aggregate(df, pathogen, name))
+        print(f"{prefix} {pathogen}/{name} processed!")
+
+    if not records:
+        print("No completed datasets found.")
         return
 
-    df = pd.concat(
-        (pd.read_csv(f) for f in tqdm(files, desc="Aggregating reports", unit="dataset")),
-        ignore_index=True,
-    )
-    df.to_csv(OUT_PATH, index=False)
-    print(f"{len(df)} rows from {len(files)} datasets → {OUT_PATH}")
+    pd.DataFrame(records).to_csv(OUT_PATH, index=False)
+    print(f"\n{len(records)}/{n_total} datasets → {OUT_PATH}")
 
 
 if __name__ == "__main__":
