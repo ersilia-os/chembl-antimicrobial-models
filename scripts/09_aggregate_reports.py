@@ -8,6 +8,7 @@ Usage:
     python scripts/09_aggregate_reports.py
 """
 
+import json
 import os
 
 import numpy as np
@@ -18,10 +19,20 @@ REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
 METADATA_PATH = os.path.join(REPO_ROOT, "output", "results", "06_datasets_metadata.csv")
 REPORTS_DIR   = os.path.join(REPO_ROOT, "output", "results", "08_reports")
+MODELS_DIR    = os.path.join(REPO_ROOT, "output", "results", "08_models")
 OUT_PATH      = os.path.join(REPO_ROOT, "output", "results", "09_reports.csv")
 
 N_FOLDS      = 5
 DESCRIPTORS  = ["cddd", "chemeleon", "clamp", "morgan", "rdkit"]
+
+
+def _dir_size_mb(path: str) -> float:
+    total = sum(
+        os.path.getsize(os.path.join(dp, f))
+        for dp, _, files in os.walk(path)
+        for f in files
+    )
+    return round(total / 1e6, 3)
 
 
 def aggregate(df: pd.DataFrame, pathogen: str, name: str) -> dict:
@@ -43,6 +54,21 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str) -> dict:
         else:
             row[f"{col}_mean"] = round(vals.mean(), 4)
             row[f"{col}_std"]  = round(vals.std(), 4)
+
+    model_dir = os.path.join(MODELS_DIR, pathogen, name)
+    meta_path = os.path.join(model_dir, "metadata.json")
+    if os.path.exists(meta_path):
+        with open(meta_path) as f:
+            model_meta = json.load(f)
+        row["decision_cutoff_rank"] = round(model_meta["decision_cutoff_rank"], 4)
+    else:
+        row["decision_cutoff_rank"] = np.nan
+
+    for desc in DESCRIPTORS:
+        desc_dir = os.path.join(model_dir, desc)
+        row[f"model_size_{desc}_mb"] = _dir_size_mb(desc_dir) if os.path.isdir(desc_dir) else np.nan
+
+    row["model_size_total_mb"] = _dir_size_mb(model_dir) if os.path.isdir(model_dir) else np.nan
 
     row["predict_rank_actives"]   = ";".join(df["predict_rank_actives"].tolist())
     row["predict_rank_inactives"] = ";".join(df["predict_rank_inactives"].tolist())
