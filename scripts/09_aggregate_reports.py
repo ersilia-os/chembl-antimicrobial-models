@@ -26,6 +26,26 @@ N_FOLDS      = 5
 DESCRIPTORS  = ["cddd", "chemeleon", "clamp", "morgan", "rdkit"]
 
 
+def _fmt_compounds(n: int) -> str:
+    k = n / 1000
+    if k < 10:
+        return f"{k:.1f}k"
+    return f"{round(k):.0f}k"
+
+
+def _model_name(mrow: pd.Series, counter: int) -> str:
+    label_type = "individual" if mrow["label"] in ("A", "B") else "merged"
+    parts = [
+        str(counter),
+        label_type,
+        mrow["activity_type"],
+        _fmt_compounds(int(mrow["compounds"])),
+    ]
+    if int(mrow["decoys"]) > 0:
+        parts.append("decoys")
+    return "_".join(parts)
+
+
 def _dir_size_mb(path: str) -> float:
     total = sum(
         os.path.getsize(os.path.join(dp, f))
@@ -35,8 +55,8 @@ def _dir_size_mb(path: str) -> float:
     return round(total / 1e6, 3)
 
 
-def aggregate(df: pd.DataFrame, pathogen: str, name: str) -> dict:
-    row = {"pathogen": pathogen, "name": name}
+def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow: pd.Series, counter: int) -> dict:
+    row = {"pathogen": pathogen, "name": name, "model_name": _model_name(mrow, counter)}
 
     row["n_compounds"] = int(df["compounds_test"].sum())
     row["n_positives"] = int(df["positives_test"].sum())
@@ -61,8 +81,11 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str) -> dict:
         with open(meta_path) as f:
             model_meta = json.load(f)
         row["decision_cutoff_rank"] = round(model_meta["decision_cutoff_rank"], 4)
+        portfolio = model_meta.get("portfolio", [])
+        row["portfolio"] = ";".join(sorted(p.upper() for p in portfolio))
     else:
         row["decision_cutoff_rank"] = np.nan
+        row["portfolio"] = np.nan
 
     for desc in DESCRIPTORS:
         desc_dir = os.path.join(model_dir, desc)
@@ -77,11 +100,21 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str) -> dict:
 
 
 def main() -> None:
-    meta = pd.read_csv(METADATA_PATH)
-    n_total = len(meta)
+    meta_df = pd.read_csv(METADATA_PATH)
+    n_total = len(meta_df)
+
+    # Build per-pathogen counters (counts ALL rows, including incomplete ones)
+    meta_lookup = {}
+    pathogen_counters: dict[str, int] = {}
+    for _, mrow in meta_df.iterrows():
+        p = mrow["pathogen"]
+        c = pathogen_counters.get(p, 0)
+        meta_lookup[(p, mrow["name"])] = (mrow, c)
+        pathogen_counters[p] = c + 1
+
     records = []
 
-    for i, mrow in enumerate(meta.itertuples(), start=1):
+    for i, mrow in enumerate(meta_df.itertuples(), start=1):
         pathogen, name = mrow.pathogen, mrow.name
         prefix = f"[{i}/{n_total}]"
 
@@ -95,7 +128,8 @@ def main() -> None:
             print(f"{prefix} [WARN] {pathogen}/{name}: only {len(df)}/{N_FOLDS} folds complete, skipping")
             continue
 
-        records.append(aggregate(df, pathogen, name))
+        meta_row, counter = meta_lookup[(pathogen, name)]
+        records.append(aggregate(df, pathogen, name, meta_row, counter))
         print(f"{prefix} {pathogen}/{name} processed!")
 
     if not records:
