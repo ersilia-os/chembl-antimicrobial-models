@@ -62,28 +62,6 @@ eosvc download --path output
 
 Steps 04 and 08 are static SLURM scripts designed to run on an HPC cluster; all other scripts run locally.
 
-## Weighting strategy
-
-Each trained model receives a `final_weight` score in `09_reports.csv`, computed as the mean of seven independent weights (w1–w7). A higher `final_weight` indicates a model that is more reliable and ready for deployment.
-
-### Model-dependent weights
-
-These weights reflect intrinsic properties of the dataset and how well the model performed during cross-validation.
-
-| Weight | Description |
-|--------|-------------|
-| **w1** | **Dataset type.** Individual pathogen-specific datasets score 1.0; merged (multi-source) datasets score 0.5; general datasets score 0.0. See [`chembl-antimicrobial-tasks`](https://github.com/ersilia-os/chembl-antimicrobial-tasks) for details on dataset types. |
-| **w2** | **Decoy contamination.** 1.0 if no decoy compounds were added to the inactive set; decreases linearly toward 0 as the fraction of decoys among inactives increases. |
-| **w3** | **Cross-validated AUROC.** 0 for mean CV AUROC ≤ 0.7; linear to 1 at AUROC = 1.0. |
-| **w4** | **AUPRC enrichment.** Sum of two equal sub-scores (each 0–0.5): (i) absolute excess of mean AUPRC over the prevalence baseline, scaled from 0 at baseline to 0.5 at AUPRC = 1; (ii) fold enrichment over baseline, scaled from 0 at ≤1× to 0.5 at ≥10×. |
-| **w5** | **BEDROC enrichment.** Same two-component scheme as w4, applied to mean BEDROC versus its expected random-ranking baseline (α = 20). BEDROC captures early enrichment — how well actives are concentrated at the top of the ranked list. |
-| **w6** | **Total compound count.** Piecewise linear: 0 at < 100 compounds, 0.25 at 1k, 0.5 at 10k, 1.0 at ≥ 100k. |
-| **w7** | **Active compound count.** Piecewise linear: 0 at < 50 actives, 0.25 at 250, 0.5 at 1k, 1.0 at ≥ 10k. |
-
-### Sample-dependent weights
-
-*Placeholder — to be defined.*
-
 ## Repository structure
 
 ```
@@ -113,6 +91,28 @@ chembl-antimicrobial-models/
         ├── 08_logs/                         # SLURM job logs for model training
         └── 09_reports.csv                   # One summarised row per dataset: model_name, metrics, model sizes, decision cutoff, portfolio, predict_rank scores
 ```
+
+## Weighting strategy
+
+Each trained model receives a `final_weight` score in `09_reports.csv`, computed as the mean of seven independent weights (w1–w7). A higher `final_weight` indicates a model that is more reliable and ready for deployment.
+
+### Model-dependent weights
+
+These weights reflect intrinsic properties of the dataset and how well the model performed during cross-validation.
+
+| Weight | Description |
+|--------|-------------|
+| **w1** | **Dataset type.** Individual pathogen-specific datasets score 1.0; merged (multi-source) datasets score 0.5; general datasets score 0.0. See [`chembl-antimicrobial-tasks`](https://github.com/ersilia-os/chembl-antimicrobial-tasks) for details on dataset types. |
+| **w2** | **Decoy contamination.** 1.0 if no decoy compounds were added to the inactive set; decreases linearly toward 0 as the fraction of decoys among inactives increases. |
+| **w3** | **Cross-validated AUROC.** 0 for mean CV AUROC ≤ 0.7; linear to 1 at AUROC = 1.0. |
+| **w4** | **AUPRC enrichment.** Sum of two equal sub-scores (each 0–0.5): (i) absolute excess of mean AUPRC over the prevalence baseline, scaled from 0 at baseline to 0.5 at AUPRC = 1; (ii) fold enrichment over baseline, scaled from 0 at ≤1× to 0.5 at ≥10×. |
+| **w5** | **BEDROC enrichment.** Same two-component scheme as w4, applied to mean BEDROC versus its expected random-ranking baseline (α = 20). BEDROC captures early enrichment — how well actives are concentrated at the top of the ranked list. |
+| **w6** | **Total compound count.** Piecewise linear: 0 at < 100 compounds, 0.25 at 1k, 0.5 at 10k, 1.0 at ≥ 100k. |
+| **w7** | **Active compound count.** Piecewise linear: 0 at < 50 actives, 0.25 at 250, 0.5 at 1k, 1.0 at ≥ 10k. |
+
+### Sample-dependent weights
+
+*Placeholder — to be defined.*
 
 ## About the Ersilia Open Source Initiative
 
