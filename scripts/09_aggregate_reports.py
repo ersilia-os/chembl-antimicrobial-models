@@ -184,7 +184,12 @@ def main() -> None:
         print("No completed datasets found.")
         return
 
-    pd.DataFrame(records).to_csv(OUT_PATH, index=False)
+    out = pd.DataFrame(records)
+    pathogen_totals = out.groupby("pathogen")["final_weight"].transform("sum")
+    normalized = (out["final_weight"] / pathogen_totals * 100).round(4)
+    out.insert(out.columns.get_loc("final_weight") + 1, "final_normalized_weight", normalized)
+
+    out.to_csv(OUT_PATH, index=False)
     print(f"\n{len(records)}/{n_total} datasets → {OUT_PATH}")
 
 
