@@ -70,22 +70,25 @@ def _w3(df: pd.DataFrame) -> float:
     return round(min((auroc - 0.7) / 0.3, 1.0), 4)
 
 
+def _enrichment_weight(value: float, baseline: float) -> float:
+    """
+    Combined weight from two equal sub-scores (each 0–0.5, total 0–1):
+      c1: absolute excess — 0 when value=baseline, 0.5 when value=1
+      c2: fold enrichment — 0 at ≤1×, 0.5 at ≥10× over baseline
+    """
+    c1 = 0.5 * float(np.clip((value - baseline) / (1.0 - baseline), 0.0, 1.0))
+    c2 = 0.5 * float(np.clip((value / baseline - 1.0) / 9.0, 0.0, 1.0))
+    return round(c1 + c2, 4)
+
+
 def _w4(df: pd.DataFrame) -> float:
-    """Normalised AUPRC lift over prevalence baseline: 0 at lift ≤0.3, linear to 1 at lift=1."""
-    mean_auprc    = df["auprc"].mean()
-    mean_baseline = df["baseline_auprc"].mean()
-    if mean_baseline >= 1.0:
-        return 1.0
-    lift = (mean_auprc - mean_baseline) / (1.0 - mean_baseline)
-    lift = max(0.0, min(lift, 1.0))
-    if lift <= 0.3:
-        return 0.0
-    return round((lift - 0.3) / 0.7, 4)
+    """AUPRC weight: absolute-excess (0–0.5) + fold-enrichment (0–0.5) over prevalence baseline."""
+    return _enrichment_weight(df["auprc"].mean(), df["baseline_auprc"].mean())
 
 
 def _w5(df: pd.DataFrame) -> float:
-    """BEDROC-based weight — not yet captured in step 08; returns 1.0 as neutral placeholder."""
-    return 1.0
+    """BEDROC weight: absolute-excess (0–0.5) + fold-enrichment (0–0.5) over random baseline."""
+    return _enrichment_weight(df["bedroc"].mean(), df["baseline_bedroc"].mean())
 
 
 _W6_KNOTS = [(100, 0.0), (1_000, 0.25), (10_000, 0.5), (100_000, 1.0)]
@@ -126,7 +129,7 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow) -> dict:
     row["n_compounds"] = int(df["compounds_test"].sum())
     row["n_positives"] = int(df["positives_test"].sum())
 
-    for col in ("auroc", "auprc", "baseline_auprc"):
+    for col in ("auroc", "auprc", "baseline_auprc", "bedroc", "baseline_bedroc"):
         row[f"{col}_mean"] = round(df[col].mean(), 4)
         row[f"{col}_std"]  = round(df[col].std(), 4)
 
@@ -137,6 +140,7 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow) -> dict:
     row["w5"] = _w5(df)
     row["w6"] = _w6(df)
     row["w7"] = _w7(df)
+    row["final_weight"] = round(float(np.mean([row["w1"], row["w2"], row["w3"], row["w4"], row["w5"], row["w6"], row["w7"]])), 4)
 
     row["decision_cutoff_rank"] = decision_cutoff_rank
     row["portfolio"]            = portfolio
