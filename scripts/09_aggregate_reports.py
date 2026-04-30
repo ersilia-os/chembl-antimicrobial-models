@@ -26,18 +26,6 @@ N_FOLDS      = 5
 DESCRIPTORS  = ["cddd", "chemeleon", "clamp", "morgan", "rdkit"]
 
 
-def _model_name(mrow: pd.Series, counter: int) -> str:
-    label_map = {"A": "individual", "B": "individual", "M": "merged", "G": "general"}
-    label_type = label_map[mrow["label"]]
-    parts = [
-        label_type,
-        mrow["activity_type"].lower(),
-    ]
-    if int(mrow["decoys"]) > 0:
-        parts.append("decoys")
-    return "_".join(parts)
-
-
 def _dir_size_mb(path: str) -> float:
     total = sum(
         os.path.getsize(os.path.join(dp, f))
@@ -47,8 +35,9 @@ def _dir_size_mb(path: str) -> float:
     return round(total / 1e6, 3)
 
 
-def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow: pd.Series, counter: int) -> dict:
-    row = {"pathogen": pathogen, "name": name, "model_name": _model_name(mrow, counter)}
+def aggregate(df: pd.DataFrame, pathogen: str, name: str) -> dict:
+    model_name = df["model_name"].iloc[0]
+    row = {"pathogen": pathogen, "name": name, "model_name": model_name}
 
     row["n_compounds"] = int(df["compounds_test"].sum())
     row["n_positives"] = int(df["positives_test"].sum())
@@ -67,7 +56,7 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow: pd.Series, count
             row[f"{col}_mean"] = round(vals.mean(), 4)
             row[f"{col}_std"]  = round(vals.std(), 4)
 
-    model_dir = os.path.join(MODELS_DIR, pathogen, name)
+    model_dir = os.path.join(MODELS_DIR, pathogen, model_name)
     meta_path = os.path.join(model_dir, "metadata.json")
     if os.path.exists(meta_path):
         with open(meta_path) as f:
@@ -78,10 +67,6 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow: pd.Series, count
     else:
         row["decision_cutoff_rank"] = np.nan
         row["portfolio"] = np.nan
-
-    for desc in DESCRIPTORS:
-        desc_dir = os.path.join(model_dir, desc)
-        row[f"model_size_{desc}_mb"] = _dir_size_mb(desc_dir) if os.path.isdir(desc_dir) else np.nan
 
     row["model_size_total_mb"] = _dir_size_mb(model_dir) if os.path.isdir(model_dir) else np.nan
 
@@ -94,16 +79,6 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow: pd.Series, count
 def main() -> None:
     meta_df = pd.read_csv(METADATA_PATH)
     n_total = len(meta_df)
-
-    # Build per-pathogen counters (counts ALL rows, including incomplete ones)
-    meta_lookup = {}
-    pathogen_counters: dict[str, int] = {}
-    for _, mrow in meta_df.iterrows():
-        p = mrow["pathogen"]
-        c = pathogen_counters.get(p, 0)
-        meta_lookup[(p, mrow["name"])] = (mrow, c)
-        pathogen_counters[p] = c + 1
-
     records = []
 
     for i, mrow in enumerate(meta_df.itertuples(), start=1):
@@ -120,30 +95,12 @@ def main() -> None:
             print(f"{prefix} [WARN] {pathogen}/{name}: only {len(df)}/{N_FOLDS} folds complete, skipping")
             continue
 
-        meta_row, counter = meta_lookup[(pathogen, name)]
-        records.append(aggregate(df, pathogen, name, meta_row, counter))
+        records.append(aggregate(df, pathogen, name))
         print(f"{prefix} {pathogen}/{name} processed!")
 
     if not records:
         print("No completed datasets found.")
         return
-
-    # Deduplicate model_name within each pathogen: append _a, _b, ... for clashes
-    from collections import Counter as _Counter
-    import string as _string
-    seen: dict[tuple, int] = {}
-    for rec in records:
-        key = (rec["pathogen"], rec["model_name"])
-        seen[key] = seen.get(key, 0) + 1
-
-    counts: dict[tuple, int] = {}
-    suffixes = list(_string.ascii_lowercase)
-    for rec in records:
-        key = (rec["pathogen"], rec["model_name"])
-        if seen[key] > 1:
-            n = counts.get(key, 0)
-            rec["model_name"] = f"{rec['model_name']}_{suffixes[n]}"
-            counts[key] = n + 1
 
     pd.DataFrame(records).to_csv(OUT_PATH, index=False)
     print(f"\n{len(records)}/{n_total} datasets → {OUT_PATH}")

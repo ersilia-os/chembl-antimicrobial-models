@@ -24,6 +24,8 @@ import pandas as pd
 from sklearn.metrics import average_precision_score, roc_auc_score
 from sklearn.model_selection import StratifiedKFold
 
+import string
+
 from lazyqsar.qsar import LazyClassifierQSAR
 
 ROOT      = os.path.dirname(os.path.abspath(__file__))
@@ -42,13 +44,45 @@ DESCRIPTOR_TYPES = {
     "fast": ["morgan"],
 }
 
+_LABEL_MAP = {"A": "individual", "B": "individual", "M": "merged", "G": "general"}
+
+
+def _compute_model_name(meta: pd.DataFrame, task_id: int) -> str:
+    row = meta.iloc[task_id]
+    pathogen = row["pathogen"]
+    pathogen_meta = meta[meta["pathogen"] == pathogen].reset_index()
+
+    def _base(r: pd.Series) -> str:
+        parts = [_LABEL_MAP[r["label"]], r["activity_type"].lower()]
+        if int(r["decoys"]) > 0:
+            parts.append("decoys")
+        return "_".join(parts)
+
+    base_names = [_base(r) for _, r in pathogen_meta.iterrows()]
+
+    from collections import Counter
+    counts = Counter(base_names)
+    seen: dict[str, int] = {}
+    final_names = []
+    for bn in base_names:
+        if counts[bn] > 1:
+            idx = seen.get(bn, 0)
+            final_names.append(f"{bn}_{string.ascii_lowercase[idx]}")
+            seen[bn] = idx + 1
+        else:
+            final_names.append(bn)
+
+    pos = pathogen_meta.index[pathogen_meta["name"] == row["name"]][0]
+    return final_names[pos]
+
 
 def run(task_id: int) -> None:
     meta = pd.read_csv(METADATA_PATH)
     row  = meta.iloc[task_id]
     pathogen, name = row["pathogen"], row["name"]
+    model_name = _compute_model_name(meta, task_id)
 
-    print(f"[{task_id}] {pathogen}/{name}")
+    print(f"[{task_id}] {pathogen}/{name} ({model_name})")
 
     dataset_path = os.path.join(DATASETS_DIR, pathogen, f"{name}.csv")
     df = pd.read_csv(dataset_path)
@@ -80,6 +114,8 @@ def run(task_id: int) -> None:
             for desc in DESCRIPTOR_TYPES[MODE]
         }
 
+        num_batches = len(model.models[0]._model.models) if model.models else np.nan
+
         y_arr = np.array(y_test)
 
         def fmt(arr, mask):
@@ -88,6 +124,7 @@ def run(task_id: int) -> None:
         records.append({
             "pathogen":               pathogen,
             "name":                   name,
+            "model_name":             model_name,
             "fold":                   fold,
             "compounds_train":        len(y_train),
             "compounds_test":         len(y_test),
@@ -97,6 +134,7 @@ def run(task_id: int) -> None:
             "auprc":                  round(auprc, 4),
             "baseline_auroc":         baseline_auroc,
             "baseline_auprc":         round(baseline_auprc, 4),
+            "num_batches":            num_batches,
             **oof_per_descriptor,
             "predict_proba_actives":  fmt(scores_proba, y_arr == 1),
             "predict_proba_inactives":fmt(scores_proba, y_arr == 0),
@@ -116,7 +154,7 @@ def run(task_id: int) -> None:
     model = LazyClassifierQSAR(mode=MODE)
     model.fit(smiles_list=smiles, y=y)
 
-    model_path = os.path.join(MODELS_DIR, pathogen, name)
+    model_path = os.path.join(MODELS_DIR, pathogen, model_name)
     os.makedirs(os.path.dirname(model_path), exist_ok=True)
     model.save(model_path)
     print(f"  Model saved:  {model_path}")
