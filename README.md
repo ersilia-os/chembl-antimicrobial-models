@@ -56,11 +56,33 @@ eosvc download --path output
 | 04 | `scripts/04_run_decoys.sh` | Static SLURM array job script; submit using the command printed by step 03 (`sbatch --chdir=<repo_root> --array=0-N%M scripts/04_run_decoys.sh`); runs `eos3e6s` on each input split via `ersilia_apptainer` |
 | 05 | `scripts/05_aggregate_decoys.py` | Streams all per-split CSVs into `output/results/05_eos3e6s_v1.csv`; `--cleanup` removes intermediate directories (splits, decoys, logs) only if all expected splits are present |
 | 06 | `scripts/06_prepare_datasets.py` | Extracts raw compound CSVs from per-pathogen zip archives into `output/results/06_datasets/{pathogen}/{name}.csv` (columns: `smiles, bin`); augments datasets with active ratio > 0.5 with decoy compounds targeting ratio 0.1; saves enriched metadata to `output/results/06_datasets_metadata.csv` |
-| 07 | `scripts/07_download_weights.py` | Downloads LazyQSAR descriptor weights (cddd, chemeleon, clamp) to `output/results/07_weights/.lazyqsar/`; run once from the login node before submitting step 08; accepts `--path` to override the cache location; prints two separate `sbatch` commands — one for small datasets (≤20k compounds, 16 GB) and one for large datasets (>20k compounds, 64 GB) |
+| 07 | `scripts/07_download_weights.py` | Downloads LazyQSAR descriptor weights (cddd, chemeleon, clamp) to `output/results/07_weights/.lazyqsar/`; run once from the login node before submitting step 08; accepts `--path` to override the cache location; prints two separate `sbatch` commands — one for small datasets (≤30k compounds, 16 GB) and one for large datasets (>30k compounds, 64 GB) |
 | 08 | `scripts/08_run_models.sh` | Static SLURM array job script; submit using the commands printed by step 07; trains a LazyQSAR model for each dataset and saves CV reports and the final model |
 | 09 | `scripts/09_aggregate_reports.py` | Iterates over datasets from `06_datasets_metadata.csv`, skips incomplete runs (< 5 folds), and writes one summarised row per dataset to `output/results/09_reports.csv`; reports mean/std AUROC/AUPRC, per-descriptor OOF AUCs, decision cutoff, per-descriptor model sizes, aggregated predict_rank scores for actives and inactives, portfolio composition, and a human-readable `model_name` encoding dataset type, activity, compound count, and decoy status |
 
 Steps 04 and 08 are static SLURM scripts designed to run on an HPC cluster; all other scripts run locally.
+
+## Weighting strategy
+
+Each trained model receives a `final_weight` score in `09_reports.csv`, computed as the mean of seven independent weights (w1–w7). A higher `final_weight` indicates a model that is more reliable and ready for deployment.
+
+### Model-dependent weights
+
+These weights reflect intrinsic properties of the dataset and how well the model performed during cross-validation.
+
+| Weight | Description |
+|--------|-------------|
+| **w1** | **Dataset type.** Individual pathogen-specific datasets score 1.0; merged (multi-source) datasets score 0.5; general datasets score 0.0. See [`chembl-antimicrobial-tasks`](https://github.com/ersilia-os/chembl-antimicrobial-tasks) for details on dataset types. |
+| **w2** | **Decoy contamination.** 1.0 if no decoy compounds were added to the inactive set; decreases linearly toward 0 as the fraction of decoys among inactives increases. |
+| **w3** | **Cross-validated AUROC.** 0 for mean CV AUROC ≤ 0.7; linear to 1 at AUROC = 1.0. |
+| **w4** | **AUPRC enrichment.** Sum of two equal sub-scores (each 0–0.5): (i) absolute excess of mean AUPRC over the prevalence baseline, scaled from 0 at baseline to 0.5 at AUPRC = 1; (ii) fold enrichment over baseline, scaled from 0 at ≤1× to 0.5 at ≥10×. |
+| **w5** | **BEDROC enrichment.** Same two-component scheme as w4, applied to mean BEDROC versus its expected random-ranking baseline (α = 20). BEDROC captures early enrichment — how well actives are concentrated at the top of the ranked list. |
+| **w6** | **Total compound count.** Piecewise linear: 0 at < 100 compounds, 0.25 at 1k, 0.5 at 10k, 1.0 at ≥ 100k. |
+| **w7** | **Active compound count.** Piecewise linear: 0 at < 50 actives, 0.25 at 250, 0.5 at 1k, 1.0 at ≥ 10k. |
+
+### Sample-dependent weights
+
+*Placeholder — to be defined.*
 
 ## Repository structure
 
