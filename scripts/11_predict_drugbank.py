@@ -21,6 +21,9 @@ from lazyqsar.qsar import LazyClassifierQSAR
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
+# Point lazyqsar to the project weights directory (mirrors what 08_run_models.sh does via $HOME).
+os.environ["HOME"] = os.path.join(REPO_ROOT, "output", "results", "07_weights")
+
 DEFAULT_DRUGBANK   = os.path.join(REPO_ROOT, "data", "processed", "10_drugbank_smiles.csv")
 DEFAULT_MODELS_DIR = os.path.join(REPO_ROOT, "output", "results", "08_models")
 DEFAULT_OUT_DIR    = os.path.join(REPO_ROOT, "output", "results", "11_drugbank")
