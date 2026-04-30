@@ -85,9 +85,9 @@ def main() -> None:
     small = df.index[df["final_compounds"] <= 20_000].tolist()
 
     print(f"\nSmall jobs (≤20k compounds, {len(small)} datasets):")
-    print(f"    sbatch --chdir={REPO_ROOT} --array={_to_array_spec(small)}%20 --mem=16G {script_path}")
+    print(f"    sbatch --chdir={REPO_ROOT} --job-name=camm-lq-sm --array={_to_array_spec(small)}%20 --mem=16G {script_path}")
     print(f"\nLarge jobs (>20k compounds, {len(large)} datasets):")
-    print(f"    sbatch --chdir={REPO_ROOT} --array={_to_array_spec(large)}%5 --mem=64G {script_path}")
+    print(f"    sbatch --chdir={REPO_ROOT} --job-name=camm-lq-lg --array={_to_array_spec(large)}%5 --mem=64G {script_path}")
 
 
 if __name__ == "__main__":
