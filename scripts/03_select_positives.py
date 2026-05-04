@@ -21,15 +21,18 @@ compound-level activity labels.
 
 Raw SMILES are deduplicated by InChIKey: all SMILES that map to the same
 InChIKey are collapsed into one row. SMILES that RDKit cannot parse are
-discarded.
+discarded. SMILES that parse but cannot be assigned an InChIKey are kept
+as their own entry (no merging).
 
 Produces output/results/03_selected_positives.csv with one row per unique
-compound (InChIKey), sorted by canonical_smiles, with columns:
-  - canonical_smiles : RDKit canonical SMILES (primary identifier)
-  - smiles           : semicolon-separated list of all raw SMILES for this compound
-  - inchikey         : InChIKey (deduplication key; null for edge-case molecules)
+compound, sorted by canonical_smiles, with columns:
+  - canonical_smiles : RDKit canonical SMILES (primary identifier downstream)
+  - smiles           : semicolon-separated list of all raw SMILES that mapped
+                       to this compound (may be a single entry)
+  - inchikey         : InChIKey used for deduplication (null for edge-case molecules)
   - n_active         : number of datasets in which the compound was active
   - found_in         : semicolon-separated list of source|pathogen|dataset tags
+                       (aggregated across all raw SMILES in the group)
   - split            : integer split index (0 = first --split_size compounds, 1 = next, …)
 
 Usage:
