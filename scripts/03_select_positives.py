@@ -48,6 +48,7 @@ from collections import defaultdict
 import pandas as pd
 from rdkit import Chem
 from rdkit.Chem.inchi import MolToInchiKey
+from tqdm import tqdm
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.join(ROOT, "..")
@@ -102,7 +103,7 @@ def read_pubchem_dataset(row: pd.Series) -> pd.Series | None:
 def collect_actives(meta: pd.DataFrame, reader, source: str) -> dict[str, set[str]]:
     actives: dict[str, set[str]] = defaultdict(set)
 
-    for _, row in meta.iterrows():
+    for _, row in tqdm(meta.iterrows(), total=len(meta), desc=source, unit="dataset"):
         smiles_series = reader(row)
         if smiles_series is None or smiles_series.empty:
             continue
@@ -125,7 +126,7 @@ def canonicalize_actives(actives: dict[str, set[str]]) -> pd.DataFrame:
     groups: dict[str, dict] = {}
     n_discarded = 0
 
-    for smi, tags in actives.items():
+    for smi, tags in tqdm(actives.items(), desc="canonicalizing", unit="smi"):
         mol = Chem.MolFromSmiles(smi)
         if mol is None:
             n_discarded += 1
