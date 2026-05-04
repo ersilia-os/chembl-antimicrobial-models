@@ -76,7 +76,7 @@ def load_decoys(decoys_path: str) -> dict[str, list[str]]:
     df = pd.read_csv(decoys_path)
     decoy_cols = [c for c in df.columns if c not in ("key", "input")]
     result = {}
-    for _, row in df.iterrows():
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Loading decoys", unit="cpd"):
         candidates = row[decoy_cols].dropna().tolist()
         if not candidates:
             continue
