@@ -78,8 +78,9 @@ def download_file(remote_path: str, local_path: str) -> bool:
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
     shutil.move(remote_abs, local_path)
     # remove any empty dirs left by eosvc under REPO_ROOT (outside our pubchem/ folders)
+    repo_root_real = os.path.realpath(REPO_ROOT)
     src_dir = os.path.dirname(remote_abs)
-    while src_dir != REPO_ROOT:
+    while os.path.realpath(src_dir) != repo_root_real:
         if os.path.isdir(src_dir) and not os.listdir(src_dir):
             os.rmdir(src_dir)
             src_dir = os.path.dirname(src_dir)
@@ -88,7 +89,7 @@ def download_file(remote_path: str, local_path: str) -> bool:
     return True
 
 
-def download_pathogen(pathogen: str) -> None:
+def download_pathogen(pathogen: str) -> bool:
     raw_dir = os.path.join(REPO_ROOT, "data", "raw", "pubchem", pathogen)
     pubchem_name = PUBCHEM_NAMES[pathogen]
 
@@ -96,24 +97,22 @@ def download_pathogen(pathogen: str) -> None:
         remote_path=f"data/processed/02_bioassays_to_keep/aids_{pubchem_name}.csv",
         local_path=os.path.join(raw_dir, "aids.csv"),
     )
-    download_file(
+    summary_ok = download_file(
         remote_path=f"data/processed/04_extracted_bioassays/{pubchem_name}/summary.csv",
         local_path=os.path.join(raw_dir, "summary.csv"),
     )
 
-    if not aids_ok:
-        return
+    if not aids_ok or not summary_ok:
+        return False
 
-    aids_path = os.path.join(raw_dir, "aids.csv")
-    if not os.path.exists(aids_path):
-        return
-    aids = pd.read_csv(aids_path)["aid"].tolist()
+    aids = pd.read_csv(os.path.join(raw_dir, "aids.csv"))["aid"].tolist()
 
     for aid in aids:
         download_file(
             remote_path=f"output/results/{pubchem_name}/{aid}.csv",
             local_path=os.path.join(raw_dir, f"{aid}.csv"),
         )
+    return True
 
 
 def merge_pathogen(pathogen: str) -> pd.DataFrame | None:
@@ -122,14 +121,18 @@ def merge_pathogen(pathogen: str) -> pd.DataFrame | None:
         print(f"Skipping merge for {pathogen}: summary.csv not found.")
         return None
 
+    aids_path = os.path.join(REPO_ROOT, "data", "raw", "pubchem", pathogen, "aids.csv")
+    valid_aids = set(pd.read_csv(aids_path)["aid"].astype(str))
+
     df = pd.read_csv(summary_path)
-    df = df[df["actives"] + df["inactives"] > 0].copy()
+    df["compounds"] = df["actives"] + df["inactives"]
+    df = df[df["compounds"] > 0].copy()
+    df = df[df["aid"].astype(str).isin(valid_aids)].copy()
     if df.empty:
         print(f"Skipping merge for {pathogen}: no binary-labelled assays.")
         return None
 
     df["name"] = df["aid"].astype(str)
-    df["compounds"] = df["actives"] + df["inactives"]
     df["positives"] = df["actives"]
     df["ratio"] = (df["positives"] / df["compounds"]).round(3)
     df["source"] = "pubchem"
@@ -183,8 +186,9 @@ def print_summary(df: pd.DataFrame, all_pathogens: bool) -> None:
 def main(args: argparse.Namespace) -> None:
     pathogens = PATHOGENS if args.all else [args.pathogen]
     for pathogen in pathogens:
-        download_pathogen(pathogen)
-        merge_pathogen(pathogen)
+        downloaded = download_pathogen(pathogen)
+        if downloaded:
+            merge_pathogen(pathogen)
     df = merge_all_pathogens()
     if df is not None:
         if not args.all:
