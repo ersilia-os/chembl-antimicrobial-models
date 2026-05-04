@@ -31,6 +31,7 @@ import random
 import zipfile
 
 import pandas as pd
+from rdkit import Chem
 from tqdm import tqdm
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -146,6 +147,20 @@ def augment_datasets(metadata: pd.DataFrame, decoys: dict[str, list[str]]) -> pd
             continue
 
         n_sample = min(n_needed, len(pool))
+
+        remaining = pool.copy()
+        selected = []
+        while len(selected) < n_sample and remaining:
+            batch = random.sample(remaining, min(n_sample - len(selected), len(remaining)))
+            for smi in batch:
+                remaining.remove(smi)
+            selected.extend(smi for smi in batch if Chem.MolFromSmiles(smi) is not None)
+
+        n_invalid = n_sample - len(selected)
+        if n_invalid:
+            print(f"  [WARN] {row['name']}: dropped {n_invalid} invalid decoy SMILES")
+        n_sample = len(selected)
+
         achieved = round(n_pos / (n_total + n_sample), 3)
         if n_sample < n_needed:
             print(
@@ -154,7 +169,7 @@ def augment_datasets(metadata: pd.DataFrame, decoys: dict[str, list[str]]) -> pd
             )
 
         new_rows = pd.DataFrame({
-            "smiles": random.sample(pool, n_sample),
+            "smiles": selected,
             "bin": 0,
             "decoy": True,
         })
