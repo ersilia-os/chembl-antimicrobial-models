@@ -1,7 +1,7 @@
 """
-Step 01 — Download representative datasets.
+Step 01 (ChEMBL) — Download ChEMBL representative datasets.
 
-Downloads the selected binary datasets from the EOS service into data/raw/<pathogen>/.
+Downloads the selected binary datasets from the EOS service into data/raw/chembl/<pathogen>/.
 Files downloaded per pathogen:
   - 17_final_datasets.csv
   - 19_final_datasets_metadata.csv
@@ -9,16 +9,16 @@ Files downloaded per pathogen:
   - 20_general_datasets.csv
   - 20_general_datasets.zip
 
-Produces data/processed/<pathogen>/01_chembl_datasets.csv with all datasets merged.
-Also produces data/processed/01_chembl_datasets_all.csv combining all pathogens.
+Produces data/processed/chembl/<pathogen>/01_chembl_datasets.csv with all datasets merged.
+Also produces data/processed/chembl/01_chembl_datasets_all.csv combining all pathogens.
 
 Optional --select_representatives flag runs stratified sampling across compound-count
-and activity-ratio bins, writing data/processed/01_chembl_datasets_representatives.csv.
+and activity-ratio bins, writing data/processed/chembl/01_chembl_datasets_representatives.csv.
 
 Usage:
-    python scripts/01_download_datasets.py --pathogen ecoli
-    python scripts/01_download_datasets.py --all
-    python scripts/01_download_datasets.py --all --select_representatives [--seed 42]
+    python scripts/01_download_datasets_chembl.py --pathogen ecoli
+    python scripts/01_download_datasets_chembl.py --all
+    python scripts/01_download_datasets_chembl.py --all --select_representatives [--seed 42]
 """
 
 import argparse
@@ -92,7 +92,7 @@ def download_file(remote_path: str, local_path: str) -> bool:
 
 
 def merge_pathogen(pathogen: str) -> None:
-    raw_dir = os.path.join(REPO_ROOT, "data", "raw", pathogen)
+    raw_dir = os.path.join(REPO_ROOT, "data", "raw", "chembl", pathogen)
 
     metadata_path = os.path.join(raw_dir, "19_final_datasets_metadata.csv")
     general_path = os.path.join(raw_dir, "20_general_datasets.csv")
@@ -101,6 +101,8 @@ def merge_pathogen(pathogen: str) -> None:
     if os.path.exists(metadata_path):
         df_final = pd.read_csv(metadata_path)
         df_final = df_final.rename(columns={"original_name": "name", "cpds": "compounds"})
+        if "source" in df_final.columns:
+            df_final = df_final.rename(columns={"source": "assay_type"})
         path_17 = os.path.join(raw_dir, "17_final_datasets.csv")
         if os.path.exists(path_17):
             df_17 = pd.read_csv(path_17, usecols=["name", "n_assays"])
@@ -116,7 +118,7 @@ def merge_pathogen(pathogen: str) -> None:
         df_general.insert(0, "name", [f"G_ORG{i}_{row.cutoff}" for i, row in enumerate(df_general.itertuples())])
         df_general["target_type"] = "ORGANISM"
         df_general["label"] = "G"
-        df_general["source"] = "general"
+        df_general["assay_type"] = "general"
         dfs.append(df_general)
 
     if not dfs:
@@ -127,12 +129,13 @@ def merge_pathogen(pathogen: str) -> None:
     df["ratio"] = (df["positives"] / df["compounds"]).round(3)
     df["auroc"] = df["auroc"].round(3)
     df.insert(0, "pathogen", pathogen)
+    df["source"] = "chembl"
 
-    first_cols = ["pathogen", "label", "source", "n_assays", "name"]
+    first_cols = ["pathogen", "source", "label", "assay_type", "n_assays", "name"]
     rest_cols = [c for c in df.columns if c not in first_cols]
     df = df[first_cols + rest_cols]
 
-    out_path = os.path.join(REPO_ROOT, "data", "processed", pathogen, "01_chembl_datasets.csv")
+    out_path = os.path.join(REPO_ROOT, "data", "processed", "chembl", pathogen, "01_chembl_datasets.csv")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     df.to_csv(out_path, index=False)
     print(f"Saved merged datasets to {out_path}")
@@ -142,7 +145,7 @@ def download_pathogen(pathogen: str) -> None:
     for filename in FILES:
         download_file(
             remote_path=f"output/{pathogen}/{filename}",
-            local_path=os.path.join(REPO_ROOT, "data", "raw", pathogen, filename),
+            local_path=os.path.join(REPO_ROOT, "data", "raw", "chembl", pathogen, filename),
         )
     pathogen_output_dir = os.path.join(REPO_ROOT, "output", pathogen)
     if os.path.isdir(pathogen_output_dir) and not os.listdir(pathogen_output_dir):
@@ -151,7 +154,7 @@ def download_pathogen(pathogen: str) -> None:
 
 
 def merge_all_pathogens() -> None:
-    processed = os.path.join(REPO_ROOT, "data", "processed")
+    processed = os.path.join(REPO_ROOT, "data", "processed", "chembl")
     dfs = []
     for pathogen in PATHOGENS:
         path = os.path.join(processed, pathogen, "01_chembl_datasets.csv")
@@ -183,7 +186,7 @@ def print_summary(df: pd.DataFrame, all_pathogens: bool) -> None:
 
 
 def select_representatives(seed: int) -> None:
-    input_path = os.path.join(REPO_ROOT, "data", "processed", "01_chembl_datasets_all.csv")
+    input_path = os.path.join(REPO_ROOT, "data", "processed", "chembl", "01_chembl_datasets_all.csv")
     if not os.path.exists(input_path):
         raise FileNotFoundError(f"Input file not found: {input_path}")
 
@@ -216,7 +219,7 @@ def select_representatives(seed: int) -> None:
         .reset_index(drop=True)
     )
     print(result[["pathogen", "name", "compounds", "ratio"]].to_string())
-    out_path = os.path.join(REPO_ROOT, "data", "processed", "01_chembl_datasets_representatives.csv")
+    out_path = os.path.join(REPO_ROOT, "data", "processed", "chembl", "01_chembl_datasets_representatives.csv")
     result.to_csv(out_path, index=False)
     print(f"\nSaved {len(result)} datasets to {out_path}")
 
