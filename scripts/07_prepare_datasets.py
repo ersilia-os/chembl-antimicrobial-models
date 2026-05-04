@@ -208,15 +208,17 @@ def augment_datasets(
 
         n_sample = min(n_needed, len(pool))
 
-        remaining = pool.copy()
+        random.shuffle(pool)
         selected = []
-        while len(selected) < n_sample and remaining:
-            batch = random.sample(remaining, min(n_sample - len(selected), len(remaining)))
-            for smi in batch:
-                remaining.remove(smi)
-            selected.extend(smi for smi in batch if Chem.MolFromSmiles(smi) is not None)
+        n_invalid = 0
+        for smi in pool:
+            if len(selected) >= n_sample:
+                break
+            if Chem.MolFromSmiles(smi) is not None:
+                selected.append(smi)
+            else:
+                n_invalid += 1
 
-        n_invalid = n_sample - len(selected)
         if n_invalid:
             print(f"  [WARN] {row['name']}: dropped {n_invalid} invalid decoy SMILES")
         n_sample = len(selected)
