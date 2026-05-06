@@ -1,13 +1,13 @@
 """
-Step 10 — Download DrugBank SMILES.
+Step 11 — Download DrugBank SMILES.
 
 Downloads the DrugBank SMILES reference file from:
   https://github.com/ersilia-os/sars-cov-2-chemspace/blob/main/data/drugbank_smiles.csv
 
 Usage:
-    python scripts/10_download_drugbank.py
-    python scripts/10_download_drugbank.py --output path/to/file.csv
-    python scripts/10_download_drugbank.py --only_smiles
+    python scripts/11_download_drugbank.py
+    python scripts/11_download_drugbank.py --output path/to/file.csv
+    python scripts/11_download_drugbank.py --only_smiles
 """
 
 import argparse

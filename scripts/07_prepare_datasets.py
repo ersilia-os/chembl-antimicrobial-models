@@ -1,10 +1,15 @@
 """
 Step 07 — Prepare datasets for model training.
 
-(1) Loads dataset metadata from:
+(1) Loads and normalises dataset metadata from:
       - data/processed/chembl/01_chembl_datasets_all.csv
+        → adds 'inactives' (compounds − positives); renames 'target_type' to
+          'target_type_chembl'
       - data/processed/pubchem/02_bioassays_to_model.csv
-    Both are combined with a 'source' column (chembl / pubchem).
+        → drops 'keep', 'pubchem_name', 'pubchem_description',
+          'pubchem_readout_columns'; uppercases 'target_type_pubchem' and
+          'target_type_chembl'
+    Both tables are concatenated; rows are sorted by pathogen.
 (2) Loads decoy data from output/results/06_eos3e6s_v1.csv and builds a
     dict mapping each canonical SMILES to up to N_DECOYS randomly sampled decoys.
 (3) Loads output/results/03_selected_positives.csv to build a raw SMILES →
@@ -16,10 +21,10 @@ Step 07 — Prepare datasets for model training.
     the active ratio down to ~0.1. Augmented datasets gain a 'decoy' column
     (False for original rows, True for added decoys). Datasets below the
     threshold are not modified and will not contain a 'decoy' column.
-(6) Saves output/results/07_datasets_metadata.csv — a copy of the combined
-    metadata with additional columns: 'source', 'decoys' (number of decoy rows
-    added, 0 for non-augmented datasets), 'final_ratio' (ratio after
-    augmentation), and 'final_compounds' (total rows after augmentation).
+(6) Saves output/results/07_datasets_metadata.csv — the normalised combined
+    metadata with additional columns: 'decoys' (number of decoy rows added,
+    0 for non-augmented datasets), 'final_ratio' (ratio after augmentation),
+    and 'final_compounds' (total rows after augmentation); sorted by pathogen.
 
 Usage:
     python scripts/07_prepare_datasets.py
@@ -64,6 +69,7 @@ def load_metadata(chembl_path: str, pubchem_path: str) -> pd.DataFrame:
     pubchem = pd.read_csv(pubchem_path)
     pubchem = pubchem.drop(columns=["keep", "pubchem_name", "pubchem_description", "pubchem_readout_columns"])
     pubchem["target_type_pubchem"] = pubchem["target_type_pubchem"].str.upper()
+    pubchem["target_type_chembl"] = pubchem["target_type_chembl"].str.upper()
 
     df = pd.concat([chembl, pubchem], ignore_index=True)
     print(f"Loaded metadata: {len(df)} datasets across {df['pathogen'].nunique()} pathogens "
@@ -265,6 +271,7 @@ def main(
     raw_to_canonical = load_raw_to_canonical(positives_path)
     extract_datasets(metadata)
     enriched = augment_datasets(metadata, decoys, raw_to_canonical)
+    enriched = enriched.sort_values("pathogen").reset_index(drop=True)
     os.makedirs(os.path.dirname(META_OUT_PATH), exist_ok=True)
     enriched.to_csv(META_OUT_PATH, index=False)
     print(f"Saved enriched metadata to {META_OUT_PATH}")

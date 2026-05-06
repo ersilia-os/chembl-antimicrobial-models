@@ -6,10 +6,11 @@ per row in 07_datasets_metadata.csv.
 
 For each dataset (identified by SLURM_ARRAY_TASK_ID):
   1. Loads the prepared CSV from output/results/07_datasets/{pathogen}/{name}.csv
-  2. Runs 5-fold stratified cross-validation and records AUROC, AUPRC, and their
-     prevalence/random baselines in output/results/09_reports/{pathogen}/{name}.csv
+  2. Runs 5-fold stratified cross-validation and records per-fold metrics
+     (AUROC, AUPRC, BEDROC and their baselines, OOF AUCs, raw score arrays)
+     in output/results/09_reports/{pathogen}/{name}.csv
   3. Trains a final model on all data and saves it to
-     output/results/09_models/{pathogen}/{name}/
+     output/results/09_models/{pathogen}/{model_name}/
 
 Usage:
     python scripts/09_run_models.py <task_id>
@@ -17,17 +18,16 @@ Usage:
 """
 
 import os
+import string
 import sys
+from collections import Counter
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import average_precision_score, roc_auc_score
-from lazyqsar.utils.metrics import bedroc_score, bedroc_random_baseline
-from sklearn.model_selection import StratifiedKFold
-
-import string
-
 from lazyqsar.qsar import LazyClassifierQSAR
+from lazyqsar.utils.metrics import bedroc_random_baseline, bedroc_score
+from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.model_selection import StratifiedKFold
 
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
@@ -63,7 +63,6 @@ def _compute_model_name(meta: pd.DataFrame, task_id: int) -> str:
 
     base_names = [_base(r) for _, r in pathogen_meta.iterrows()]
 
-    from collections import Counter
     counts = Counter(base_names)
     seen: dict[str, int] = {}
     final_names = []

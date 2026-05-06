@@ -1,14 +1,14 @@
 """
-Step 11 — Predict DrugBank ranks for all models of a given pathogen.
+Step 12 — Predict DrugBank ranks for all models of a given pathogen.
 
 Loads every trained LazyQSAR model for the specified pathogen and runs
 predict_rank on all DrugBank compounds, writing one column per model.
-Model order follows 09_reports.csv (which mirrors 06_datasets_metadata.csv).
+Model order follows 10_reports.csv (which mirrors 07_datasets_metadata.csv).
 
 Usage:
-    python scripts/11_predict_drugbank.py --pathogen ecoli
-    python scripts/11_predict_drugbank.py --all_pathogens
-    python scripts/11_predict_drugbank.py --pathogen ecoli --drugbank path/to/smiles.csv
+    python scripts/12_predict_drugbank.py --pathogen ecoli
+    python scripts/12_predict_drugbank.py --all_pathogens
+    python scripts/12_predict_drugbank.py --pathogen ecoli --drugbank path/to/smiles.csv
 """
 
 import argparse
@@ -21,17 +21,17 @@ from lazyqsar.qsar import LazyClassifierQSAR
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
-# Point lazyqsar to the project weights directory (mirrors what 08_run_models.sh does via $HOME).
-os.environ["HOME"] = os.path.join(REPO_ROOT, "output", "results", "07_weights")
+# Point lazyqsar to the project weights directory (mirrors what 09_run_models.sh does via $HOME).
+os.environ["HOME"] = os.path.join(REPO_ROOT, "output", "results", "08_weights")
 
 DEFAULT_DRUGBANK   = os.path.join(REPO_ROOT, "data", "processed", "10_drugbank_smiles.csv")
-DEFAULT_MODELS_DIR = os.path.join(REPO_ROOT, "output", "results", "08_models")
-DEFAULT_OUT_DIR    = os.path.join(REPO_ROOT, "output", "results", "11_drugbank")
-REPORTS_PATH       = os.path.join(REPO_ROOT, "output", "results", "09_reports.csv")
+DEFAULT_MODELS_DIR = os.path.join(REPO_ROOT, "output", "results", "09_models")
+DEFAULT_OUT_DIR    = os.path.join(REPO_ROOT, "output", "results", "12_drugbank")
+REPORTS_PATH       = os.path.join(REPO_ROOT, "output", "results", "10_reports.csv")
 
 
 def _ordered_model_names(pathogen: str, models_dir: str) -> list[str]:
-    """Return model names for a pathogen in 09_reports.csv order, keeping only those on disk."""
+    """Return model names for a pathogen in 10_reports.csv order, keeping only those on disk."""
     reports = pd.read_csv(REPORTS_PATH)
     rows = reports[reports["pathogen"] == pathogen]
     pathogen_dir = os.path.join(models_dir, pathogen)
@@ -42,7 +42,7 @@ def _ordered_model_names(pathogen: str, models_dir: str) -> list[str]:
 
 
 def _ordered_pathogens() -> list[str]:
-    """Return pathogens in the order they first appear in 09_reports.csv."""
+    """Return pathogens in the order they first appear in 10_reports.csv."""
     reports = pd.read_csv(REPORTS_PATH)
     return list(dict.fromkeys(reports["pathogen"].tolist()))
 

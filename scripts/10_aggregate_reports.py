@@ -1,11 +1,11 @@
 """
-Step 09 — Aggregate per-dataset CV reports into a single summarised file.
+Step 10 — Aggregate per-dataset CV reports into a single summarised file.
 
-Iterates over datasets from 06_datasets_metadata.csv, validates that all 5
-folds are present, and writes one row per dataset to 09_reports.csv.
+Iterates over datasets from 07_datasets_metadata.csv, validates that all 5
+folds are present, and writes one row per dataset to 10_reports.csv.
 
 Usage:
-    python scripts/09_aggregate_reports.py
+    python scripts/10_aggregate_reports.py
 """
 
 import json
@@ -17,10 +17,10 @@ import pandas as pd
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
-METADATA_PATH = os.path.join(REPO_ROOT, "output", "results", "06_datasets_metadata.csv")
-REPORTS_DIR   = os.path.join(REPO_ROOT, "output", "results", "08_reports")
-MODELS_DIR    = os.path.join(REPO_ROOT, "output", "results", "08_models")
-OUT_PATH      = os.path.join(REPO_ROOT, "output", "results", "09_reports.csv")
+METADATA_PATH = os.path.join(REPO_ROOT, "output", "results", "07_datasets_metadata.csv")
+REPORTS_DIR   = os.path.join(REPO_ROOT, "output", "results", "09_reports")
+MODELS_DIR    = os.path.join(REPO_ROOT, "output", "results", "09_models")
+OUT_PATH      = os.path.join(REPO_ROOT, "output", "results", "10_reports.csv")
 
 N_FOLDS      = 5
 DESCRIPTORS  = ["cddd", "chemeleon", "clamp", "morgan", "rdkit"]

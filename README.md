@@ -56,12 +56,12 @@ eosvc download --path output
 | 04 | `scripts/04_setup_decoy_run.py` | Splits positives into batches, builds the `eos3e6s` Apptainer SIF image via `ersilia_apptainer create` (accepts `--version`, default `v1.0.0`), and prints the exact `sbatch` command to submit step 05; requires `envs/camm` from the Setup step |
 | 05 | `scripts/05_run_decoys.sh` | Static SLURM array job script; submit using the command printed by step 04 (`sbatch --chdir=<repo_root> --array=0-N%M scripts/05_run_decoys.sh`); runs `eos3e6s` on each input split via `ersilia_apptainer` |
 | 06 | `scripts/06_aggregate_decoys.py` | Streams all per-split CSVs into `output/results/06_eos3e6s_v1.csv`; `--cleanup` removes intermediate directories (splits, decoys, logs) only if all expected splits are present |
-| 07 | `scripts/07_prepare_datasets.py` | Extracts raw compound CSVs from per-pathogen zip archives into `output/results/07_datasets/{pathogen}/{name}.csv` (columns: `smiles, bin`); augments datasets with active ratio > 0.5 with decoy compounds targeting ratio 0.1; saves enriched metadata to `output/results/07_datasets_metadata.csv` |
-| 08 | `scripts/08_download_weights.py` | Downloads LazyQSAR descriptor weights (cddd, chemeleon, clamp) to `output/results/07_weights/.lazyqsar/`; run once from the login node before submitting step 09; accepts `--path` to override the cache location; prints two separate `sbatch` commands — one for small datasets (≤30k compounds, 16 GB) and one for large datasets (>30k compounds, 64 GB) |
-| 09 | `scripts/09_run_models.sh` | Static SLURM array job script; submit using the commands printed by step 08; trains a LazyQSAR model for each dataset and saves CV reports and the final model |
-| 10 | `scripts/10_aggregate_reports.py` | Iterates over datasets from `07_datasets_metadata.csv`, skips incomplete runs (< 5 folds), and writes one summarised row per dataset to `output/results/09_reports.csv`; reports mean/std AUROC/AUPRC/BEDROC, per-descriptor OOF AUCs, seven model-quality weights (w1–w7), `final_weight`, `final_normalized_weight`, decision cutoff, model sizes, portfolio, and aggregated predict_rank scores |
+| 07 | `scripts/07_prepare_datasets.py` | Normalises and merges ChEMBL and PubChem metadata; extracts raw compound CSVs into `output/results/07_datasets/{pathogen}/{name}.csv` (columns: `smiles, bin`); augments datasets with active ratio > 0.5 with decoy compounds targeting ratio 0.1; saves enriched metadata sorted by pathogen to `output/results/07_datasets_metadata.csv` |
+| 08 | `scripts/08_download_weights.py` | Downloads LazyQSAR descriptor weights (cddd, chemeleon, clamp) to `output/results/08_weights/.lazyqsar/`; run once from the login node before submitting step 09; accepts `--path` to override the cache location; prints two separate `sbatch` commands — one for small datasets (≤30k compounds, 16 GB) and one for large datasets (>30k compounds, 64 GB) |
+| 09 | `scripts/09_run_models.sh` | Static SLURM array job script; submit using the commands printed by step 08; invokes `09_run_models.py` per task — runs 5-fold CV and trains a final LazyQSAR model, saving reports to `output/results/09_reports/` and models to `output/results/09_models/` |
+| 10 | `scripts/10_aggregate_reports.py` | Iterates over datasets from `07_datasets_metadata.csv`, skips incomplete runs (< 5 folds), and writes one summarised row per dataset to `output/results/10_reports.csv`; reports mean/std AUROC/AUPRC/BEDROC, per-descriptor OOF AUCs, seven model-quality weights (w1–w7), `final_weight`, `final_normalized_weight`, decision cutoff, model sizes, portfolio, and aggregated predict_rank scores |
 | 11 | `scripts/11_download_drugbank.py` | Downloads DrugBank SMILES from [`ersilia-os/sars-cov-2-chemspace`](https://github.com/ersilia-os/sars-cov-2-chemspace); default output `data/processed/10_drugbank_smiles.csv`; `--only_smiles` returns a single deduplicated SMILES column sorted alphabetically; `--output` overrides the destination path |
-| 12 | `scripts/12_predict_drugbank.py` | Loads all trained models for a given pathogen and runs `predict_rank` on every DrugBank compound; model order follows `09_reports.csv`; outputs one CSV per pathogen with one column per model; `--pathogen <code>` for a single pathogen, `--all_pathogens` to iterate all in metadata order |
+| 12 | `scripts/12_predict_drugbank.py` | Loads all trained models for a given pathogen and runs `predict_rank` on every DrugBank compound; model order follows `10_reports.csv`; outputs one CSV per pathogen with one column per model; `--pathogen <code>` for a single pathogen, `--all_pathogens` to iterate all in metadata order |
 
 Steps 05 and 09 are static SLURM scripts designed to run on an HPC cluster; all other scripts run locally.
 
@@ -76,7 +76,7 @@ chembl-antimicrobial-models/
 │   └── processed/              # Merged dataset metadata per pathogen
 ├── envs/
 │   └── camm/                   # Project conda env (gitignored; created with --prefix)
-├── scripts/                    # Pipeline scripts (01–09)
+├── scripts/                    # Pipeline scripts (01–12)
 ├── notebooks/                  # Exploratory notebooks
 └── output/
     └── results/
@@ -87,13 +87,13 @@ chembl-antimicrobial-models/
         ├── 05_logs/                         # SLURM job logs for decoy generation [removed by step 05 --cleanup]
         ├── 06_eos3e6s_v1.csv                # Aggregated eos3e6s predictions
         ├── 07_datasets/                     # Per-pathogen compound CSVs (smiles, bin)
-        ├── 07_datasets_metadata.csv         # Enriched metadata with decoys, final_ratio, and final_compounds columns
-        ├── 07_weights/                      # LazyQSAR descriptor weight cache (created by step 07)
-        ├── 08_reports/                      # Per-dataset CV reports (one CSV per dataset)
-        ├── 08_models/                       # Trained LazyQSAR models (one dir per dataset)
-        ├── 08_logs/                         # SLURM job logs for model training
-        ├── 09_reports.csv                   # One summarised row per dataset: model_name, metrics, weights, decision cutoff, portfolio, predict_rank scores
-        ├── 11_drugbank/                     # Per-pathogen DrugBank rank predictions (one CSV per pathogen)
+        ├── 07_datasets_metadata.csv         # Normalised merged metadata sorted by pathogen; adds decoys, final_ratio, final_compounds columns
+        ├── 08_weights/                      # LazyQSAR descriptor weight cache (created by step 08)
+        ├── 09_reports/                      # Per-dataset CV reports (one CSV per dataset)
+        ├── 09_models/                       # Trained LazyQSAR models (one dir per dataset)
+        ├── 09_logs/                         # SLURM job logs for model training
+        ├── 10_reports.csv                   # One summarised row per dataset: model_name, metrics, weights, decision cutoff, portfolio, predict_rank scores
+        ├── 12_drugbank/                     # Per-pathogen DrugBank rank predictions (one CSV per pathogen)
 └── data/
     └── processed/
         └── 10_drugbank_smiles.csv           # DrugBank SMILES (downloaded by step 10)
@@ -101,7 +101,7 @@ chembl-antimicrobial-models/
 
 ## Weighting strategy
 
-Each trained model receives a `final_weight` score in `09_reports.csv`, computed as the mean of seven independent weights (w1–w7). A higher `final_weight` indicates a model that is more reliable and ready for deployment.
+Each trained model receives a `final_weight` score in `10_reports.csv`, computed as the mean of seven independent weights (w1–w7). A higher `final_weight` indicates a model that is more reliable and ready for deployment.
 
 ### Model-dependent weights
 
