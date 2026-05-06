@@ -60,7 +60,6 @@ def load_metadata(chembl_path: str, pubchem_path: str) -> pd.DataFrame:
     chembl = pd.read_csv(chembl_path)
     chembl["source"] = "chembl"
     pubchem = pd.read_csv(pubchem_path)
-    pubchem["source"] = "pubchem"
     df = pd.concat([chembl, pubchem], ignore_index=True)
     print(f"Loaded metadata: {len(df)} datasets across {df['pathogen'].nunique()} pathogens "
           f"({len(chembl)} ChEMBL, {len(pubchem)} PubChem)")

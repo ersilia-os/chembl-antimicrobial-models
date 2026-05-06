@@ -153,7 +153,7 @@ def download_pathogen(pathogen: str) -> None:
     merge_pathogen(pathogen)
 
 
-def merge_all_pathogens() -> None:
+def merge_all_pathogens() -> pd.DataFrame | None:
     processed = os.path.join(REPO_ROOT, "data", "processed", "chembl")
     dfs = []
     for pathogen in PATHOGENS:
@@ -180,9 +180,10 @@ def print_summary(df: pd.DataFrame, all_pathogens: bool) -> None:
     if all_pathogens:
         print(f"\nPathogens processed : {df['pathogen'].nunique()} / {len(PATHOGENS)}")
         print(f"\nDatasets per pathogen:")
-        for pathogen, count in df.groupby('pathogen').size().items():
-            n_cpds = df.loc[df['pathogen'] == pathogen, 'compounds'].sum()
-            print(f"  {pathogen}: {count} datasets, {n_cpds:,} compounds")
+        counts = df.groupby('pathogen').size()
+        cpds = df.groupby('pathogen')['compounds'].sum()
+        for pathogen in counts.index:
+            print(f"  {pathogen}: {counts[pathogen]} datasets, {cpds[pathogen]:,} compounds")
 
 
 def select_representatives(seed: int) -> None:

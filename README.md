@@ -51,7 +51,7 @@ eosvc download --path output
 | Step | Script | What it does |
 |------|--------|-------------|
 | 01 | `scripts/01_download_datasets_chembl.py` | Downloads binary datasets from `chembl-antimicrobial-tasks` outputs into `data/raw/chembl/` and `data/processed/chembl/`; optionally selects a representative subset with `--select_representatives` |
-| 02 | `scripts/02_download_datasets_pubchem.py` | Downloads curated PubChem bioassay datasets from `pubchem-antimicrobial-tasks` outputs into `data/raw/pubchem/` and `data/processed/pubchem/`; per-AID metadata written to `02_pubchem_datasets.csv` |
+| 02 | `scripts/02_download_datasets_pubchem.py` | Downloads `bioassays_to_model.csv` from `pubchem-antimicrobial-tasks`, filters to assays where `keep == True`, prints a per-pathogen summary, and downloads the per-assay data CSVs into `data/raw/pubchem/<code>/<aid>.csv`; accepts `--file` to use a local copy of the index instead of downloading it |
 | 03* | `scripts/02_select_positives.py` | Extracts all active compounds (bin == 1) across every dataset, deduplicates SMILES, and records provenance and split indices in `output/results/02_selected_positives.csv` |
 | 04* | `scripts/03_setup_decoy_run.py` | Splits positives into batches, builds the `eos3e6s` Apptainer SIF image via `ersilia_apptainer create` (accepts `--version`, default `v1.0.0`), and prints the exact `sbatch` command to submit step 04; requires `envs/camm` from the Setup step |
 | 05* | `scripts/04_run_decoys.sh` | Static SLURM array job script; submit using the command printed by step 03 (`sbatch --chdir=<repo_root> --array=0-N%M scripts/04_run_decoys.sh`); runs `eos3e6s` on each input split via `ersilia_apptainer` |

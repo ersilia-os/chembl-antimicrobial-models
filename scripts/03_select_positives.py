@@ -56,7 +56,7 @@ from tqdm import tqdm
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.join(ROOT, "..")
 CHEMBL_DATASETS = os.path.join(REPO_ROOT, "data", "processed", "chembl", "01_chembl_datasets_all.csv")
-PUBCHEM_DATASETS = os.path.join(REPO_ROOT, "data", "processed", "pubchem", "02_pubchem_datasets_all.csv")
+PUBCHEM_DATASETS = os.path.join(REPO_ROOT, "data", "processed", "pubchem", "02_bioassays_to_model.csv")
 OUTPUT_PATH = os.path.join(REPO_ROOT, "output", "results", "03_selected_positives.csv")
 
 
