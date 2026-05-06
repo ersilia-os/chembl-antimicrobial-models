@@ -3,7 +3,7 @@ Step 03 — Extract active compounds from ChEMBL and PubChem datasets.
 
 Reads processed dataset metadata from:
   - data/processed/chembl/01_chembl_datasets_all.csv
-  - data/processed/pubchem/02_pubchem_datasets_all.csv
+  - data/processed/pubchem/02_bioassays_to_model.csv
 
 For each ChEMBL dataset, opens the corresponding zip archive and extracts
 SMILES with bin == 1.
@@ -16,7 +16,7 @@ Zip file mapping:
                                     (columns: compound_chembl_id, bin, smiles)
 
 For each PubChem dataset, opens the corresponding raw assay CSV under
-data/raw/pubchem/<pathogen>/<aid>.csv and extracts active SMILES from the
+data/raw/pubchem/<pathogen>/<name>.csv and extracts active SMILES from the
 compound-level activity labels.
 
 Raw SMILES are deduplicated by InChIKey: all SMILES that map to the same
@@ -200,7 +200,7 @@ if __name__ == "__main__":
         "--pubchem_datasets",
         type=str,
         default=PUBCHEM_DATASETS,
-        help="Path to the PubChem datasets CSV (default: data/processed/pubchem/02_pubchem_datasets_all.csv).",
+        help="Path to the PubChem datasets CSV (default: data/processed/pubchem/02_bioassays_to_model.csv).",
     )
     parser.add_argument(
         "--split_size",

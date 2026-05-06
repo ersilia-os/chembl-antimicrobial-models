@@ -134,6 +134,9 @@ def main() -> None:
         results_dir = "05_results"
 
     df = load_and_filter(path)
+    os.makedirs(os.path.dirname(LOCAL_INDEX), exist_ok=True)
+    df.to_csv(LOCAL_INDEX, index=False)
+    print(f"Saved filtered index to {LOCAL_INDEX}")
     print_summary(df)
     download_assay_data(df, results_dir)
 

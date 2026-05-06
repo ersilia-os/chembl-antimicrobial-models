@@ -3,7 +3,7 @@ Step 07 — Prepare datasets for model training.
 
 (1) Loads dataset metadata from:
       - data/processed/chembl/01_chembl_datasets_all.csv
-      - data/processed/pubchem/02_pubchem_datasets_all.csv
+      - data/processed/pubchem/02_bioassays_to_model.csv
     Both are combined with a 'source' column (chembl / pubchem).
 (2) Loads decoy data from output/results/06_eos3e6s_v1.csv and builds a
     dict mapping each canonical SMILES to up to N_DECOYS randomly sampled decoys.
@@ -43,7 +43,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
 CHEMBL_METADATA_PATH = os.path.join(REPO_ROOT, "data", "processed", "chembl", "01_chembl_datasets_all.csv")
-PUBCHEM_METADATA_PATH = os.path.join(REPO_ROOT, "data", "processed", "pubchem", "02_pubchem_datasets_all.csv")
+PUBCHEM_METADATA_PATH = os.path.join(REPO_ROOT, "data", "processed", "pubchem", "02_bioassays_to_model.csv")
 DECOYS_PATH           = os.path.join(REPO_ROOT, "output", "results", "06_eos3e6s_v1.csv")
 POSITIVES_PATH        = os.path.join(REPO_ROOT, "output", "results", "03_selected_positives.csv")
 RAW_DIR               = os.path.join(REPO_ROOT, "data", "raw")
@@ -58,8 +58,13 @@ N_DECOYS              = 20
 
 def load_metadata(chembl_path: str, pubchem_path: str) -> pd.DataFrame:
     chembl = pd.read_csv(chembl_path)
-    chembl["source"] = "chembl"
+    chembl["inactives"] = chembl["compounds"] - chembl["positives"]
+    chembl = chembl.rename(columns={"target_type": "target_type_chembl"})
+
     pubchem = pd.read_csv(pubchem_path)
+    pubchem = pubchem.drop(columns=["keep", "pubchem_name", "pubchem_description", "pubchem_readout_columns"])
+    pubchem["target_type_pubchem"] = pubchem["target_type_pubchem"].str.upper()
+
     df = pd.concat([chembl, pubchem], ignore_index=True)
     print(f"Loaded metadata: {len(df)} datasets across {df['pathogen'].nunique()} pathogens "
           f"({len(chembl)} ChEMBL, {len(pubchem)} PubChem)")
@@ -277,7 +282,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pubchem_metadata",
         default=PUBCHEM_METADATA_PATH,
-        help="Path to PubChem datasets CSV (default: data/processed/pubchem/02_pubchem_datasets_all.csv).",
+        help="Path to PubChem datasets CSV (default: data/processed/pubchem/02_bioassays_to_model.csv).",
     )
     parser.add_argument(
         "--decoys",
