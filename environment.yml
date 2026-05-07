@@ -3,7 +3,7 @@ channels:
   - conda-forge
 dependencies:
   - python=3.12
-  - rdkit=2025.03.6
+  - rdkit=2025.09.1
   - pandas
   - matplotlib=3.10.8
   - seaborn=0.13.2

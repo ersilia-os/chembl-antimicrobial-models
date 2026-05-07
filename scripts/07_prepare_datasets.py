@@ -148,12 +148,13 @@ def _extract_pubchem(row: pd.Series) -> pd.DataFrame | None:
     if "smiles" not in df.columns:
         return None
     if "activity" in df.columns:
-        df["bin"] = pd.to_numeric(df["activity"], errors="coerce").fillna(0).astype(int)
+        df["bin"] = pd.to_numeric(df["activity"], errors="coerce")
     elif "bin" in df.columns:
         pass
     else:
         return None
-    return df[["smiles", "bin"]].dropna(subset=["smiles"])
+    df = df[["smiles", "bin"]].dropna(subset=["smiles"])
+    return df[df["bin"].isin([0, 1])].reset_index(drop=True)
 
 
 def extract_datasets(metadata: pd.DataFrame) -> None:

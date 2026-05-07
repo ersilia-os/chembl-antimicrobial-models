@@ -48,6 +48,16 @@ DESCRIPTOR_TYPES = {
 _LABEL_MAP = {"A": "individual", "B": "individual", "M": "merged", "G": "general"}
 
 
+def _idx_to_suffix(n: int) -> str:
+    """Convert 0-based index to Excel-column-style suffix: 0→a, 25→z, 26→aa, …"""
+    result = ""
+    n += 1
+    while n > 0:
+        n, remainder = divmod(n - 1, 26)
+        result = string.ascii_lowercase[remainder] + result
+    return result
+
+
 def _compute_model_name(meta: pd.DataFrame, task_id: int) -> str:
     row = meta.iloc[task_id]
     pathogen = row["pathogen"]
@@ -69,7 +79,7 @@ def _compute_model_name(meta: pd.DataFrame, task_id: int) -> str:
     for bn in base_names:
         if counts[bn] > 1:
             idx = seen.get(bn, 0)
-            final_names.append(f"{bn}_{string.ascii_lowercase[idx]}")
+            final_names.append(f"{bn}_{_idx_to_suffix(idx)}")
             seen[bn] = idx + 1
         else:
             final_names.append(bn)
