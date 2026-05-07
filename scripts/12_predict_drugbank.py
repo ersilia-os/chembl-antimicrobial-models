@@ -1,8 +1,10 @@
 """
 Step 12 — Predict DrugBank ranks for all models of a given pathogen.
 
-Loads every trained LazyQSAR model for the specified pathogen and runs
-predict_rank on all DrugBank compounds, writing one column per model.
+Uses the lazy-qsar multi-model predict() API so descriptors are computed
+once per featurizer type and shared across all models, rather than
+recomputing them for each model independently.
+
 Model order follows 10_reports.csv (which mirrors 07_datasets_metadata.csv).
 
 Usage:
@@ -16,7 +18,7 @@ import os
 
 import pandas as pd
 
-from lazyqsar.qsar import LazyClassifierQSAR
+from lazyqsar.api.classifier_predict import predict as lqsar_predict
 
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
@@ -47,7 +49,7 @@ def _ordered_pathogens() -> list[str]:
     return list(dict.fromkeys(reports["pathogen"].tolist()))
 
 
-def run_pathogen(pathogen: str, smiles: list, models_dir: str, out_path: str) -> None:
+def run_pathogen(pathogen: str, drugbank_csv: str, models_dir: str, out_path: str) -> None:
     pathogen_dir = os.path.join(models_dir, pathogen)
     if not os.path.isdir(pathogen_dir):
         print(f"  [SKIP] {pathogen}: no model directory at {pathogen_dir}")
@@ -60,18 +62,24 @@ def run_pathogen(pathogen: str, smiles: list, models_dir: str, out_path: str) ->
 
     print(f"\n[{pathogen}] {len(model_names)} models: {model_names}")
 
-    results = {"smiles": smiles}
-    for model_name in model_names:
-        model_dir = os.path.join(pathogen_dir, model_name)
-        print(f"  Loading {model_name} ...", end=" ", flush=True)
-        model = LazyClassifierQSAR.load(model_dir)
-        scores = model.predict_rank(smiles_list=smiles)[:, 1]
-        results[model_name] = [round(float(s), 4) for s in scores]
-        print("done")
+    model_dir_dict = {
+        os.path.join(pathogen_dir, name): name for name in model_names
+    }
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    pd.DataFrame(results).to_csv(out_path, index=False)
-    print(f"  Saved {len(smiles)} rows × {len(model_names)} models → {out_path}")
+    lqsar_predict(
+        model_dir=model_dir_dict,
+        input_csv=drugbank_csv,
+        output_csv=out_path,
+        predict_type="rank",
+    )
+
+    smiles = pd.read_csv(drugbank_csv)["smiles"].tolist()
+    df = pd.read_csv(out_path)
+    df.insert(0, "smiles", smiles)
+    df.to_csv(out_path, index=False)
+
+    print(f"  Saved {len(smiles)} rows x {len(model_names)} models -> {out_path}")
 
 
 def main() -> None:
@@ -86,16 +94,16 @@ def main() -> None:
                         help="Output CSV path (single pathogen only)")
     args = parser.parse_args()
 
-    smiles = pd.read_csv(args.drugbank)["smiles"].tolist()
-    print(f"DrugBank: {len(smiles)} compounds")
+    n_compounds = len(pd.read_csv(args.drugbank))
+    print(f"DrugBank: {n_compounds} compounds")
 
     if args.all_pathogens:
         for pathogen in _ordered_pathogens():
             out_path = os.path.join(DEFAULT_OUT_DIR, f"{pathogen}.csv")
-            run_pathogen(pathogen, smiles, args.models_dir, out_path)
+            run_pathogen(pathogen, args.drugbank, args.models_dir, out_path)
     else:
         out_path = args.output or os.path.join(DEFAULT_OUT_DIR, f"{args.pathogen}.csv")
-        run_pathogen(args.pathogen, smiles, args.models_dir, out_path)
+        run_pathogen(args.pathogen, args.drugbank, args.models_dir, out_path)
 
 
 if __name__ == "__main__":
