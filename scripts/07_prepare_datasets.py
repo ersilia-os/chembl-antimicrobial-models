@@ -3,28 +3,31 @@ Step 07 — Prepare datasets for model training.
 
 (1) Loads and normalises dataset metadata from:
       - data/processed/chembl/01_chembl_datasets_all.csv
-        → adds 'inactives' (compounds − positives); renames 'target_type' to
-          'target_type_chembl'
-      - data/processed/pubchem/02_bioassays_to_model.csv
-        → drops 'keep', 'pubchem_name', 'pubchem_description',
-          'pubchem_readout_columns'; uppercases 'target_type_pubchem' and
-          'target_type_chembl'
-    Both tables are concatenated; rows are sorted by pathogen.
-(2) Loads decoy data from output/results/06_eos3e6s_v1.csv and builds a
+        → adds 'inactives' (compounds − positives)
+      - data/processed/pubchem/02_pubchem_datasets_organism.csv
+        → drops 'cids', 'inconclusive', 'unspecified'; renames pathogen_code,
+          aid, actives; uppercases 'target_type'; adds source = 'pubchem'
+    Both tables are concatenated and share a common 'target_type' column.
+(2) Flags ChEMBL datasets superseded by a PubChem assay: if a PubChem row has
+    a chembl_id and that ID appears in a ChEMBL dataset name, the ChEMBL dataset
+    is marked keep=False. All other datasets are keep=True.
+(3) Loads decoy data from output/results/06_eos3e6s_v1.csv and builds a
     dict mapping each canonical SMILES to up to N_DECOYS randomly sampled decoys.
-(3) Loads output/results/03_selected_positives.csv to build a raw SMILES →
+(4) Loads output/results/03_selected_positives.csv to build a raw SMILES →
     canonical SMILES lookup, so decoys can be assigned to raw SMILES in datasets.
-(4) Extracts raw compound CSVs from per-pathogen zip archives (ChEMBL) or flat
-    CSVs (PubChem) and writes them to output/results/07_datasets/{pathogen}/{name}.csv.
-    Output columns are normalised to smiles, bin for all datasets.
-(5) For datasets with ratio > 0.5, augments with decoy compounds to bring
+(5) Extracts raw compound CSVs (keep=True only) from per-pathogen zip archives
+    (ChEMBL) or flat CSVs (PubChem); writes to
+    output/results/07_datasets/{pathogen}/{name}.csv with columns smiles, bin.
+    Raises ValueError if any bin value outside {0, 1} is found.
+(6) For datasets with ratio > 0.5, augments with decoy compounds to bring
     the active ratio down to ~0.1. Augmented datasets gain a 'decoy' column
     (False for original rows, True for added decoys). Datasets below the
     threshold are not modified and will not contain a 'decoy' column.
-(6) Saves output/results/07_datasets_metadata.csv — the normalised combined
-    metadata with additional columns: 'decoys' (number of decoy rows added,
-    0 for non-augmented datasets), 'final_ratio' (ratio after augmentation),
-    and 'final_compounds' (total rows after augmentation); sorted by pathogen.
+(7) Saves output/results/07_datasets_metadata.csv — the normalised combined
+    metadata (all rows, including keep=False) with additional columns: 'decoys'
+    (number of decoy rows added, 0 for non-augmented datasets), 'final_ratio'
+    (ratio after augmentation), and 'final_compounds' (total rows after
+    augmentation); sorted by pathogen.
 
 Usage:
     python scripts/07_prepare_datasets.py
@@ -48,13 +51,19 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
 CHEMBL_METADATA_PATH = os.path.join(REPO_ROOT, "data", "processed", "chembl", "01_chembl_datasets_all.csv")
-PUBCHEM_METADATA_PATH = os.path.join(REPO_ROOT, "data", "processed", "pubchem", "02_bioassays_to_model.csv")
+PUBCHEM_METADATA_PATH = os.path.join(REPO_ROOT, "data", "processed", "pubchem", "02_pubchem_datasets_organism.csv")
 DECOYS_PATH           = os.path.join(REPO_ROOT, "output", "results", "06_eos3e6s_v1.csv")
 POSITIVES_PATH        = os.path.join(REPO_ROOT, "output", "results", "03_selected_positives.csv")
 RAW_DIR               = os.path.join(REPO_ROOT, "data", "raw")
 OUT_DIR               = os.path.join(REPO_ROOT, "output", "results", "07_datasets")
 META_OUT_PATH         = os.path.join(REPO_ROOT, "output", "results", "07_datasets_metadata.csv")
 N_DECOYS              = 20
+
+
+def _validate_bin(df: pd.DataFrame, name: str) -> None:
+    invalid = df.loc[~df["bin"].isin([0, 1]), "bin"].unique()
+    if len(invalid) > 0:
+        raise ValueError(f"Dataset {name!r} contains invalid bin values: {invalid.tolist()}")
 
 
 # ---------------------------------------------------------------------------
@@ -64,17 +73,41 @@ N_DECOYS              = 20
 def load_metadata(chembl_path: str, pubchem_path: str) -> pd.DataFrame:
     chembl = pd.read_csv(chembl_path)
     chembl["inactives"] = chembl["compounds"] - chembl["positives"]
-    chembl = chembl.rename(columns={"target_type": "target_type_chembl"})
+
 
     pubchem = pd.read_csv(pubchem_path)
-    pubchem = pubchem.drop(columns=["keep", "pubchem_name", "pubchem_description", "pubchem_readout_columns"])
-    pubchem["target_type_pubchem"] = pubchem["target_type_pubchem"].str.upper()
-    pubchem["target_type_chembl"] = pubchem["target_type_chembl"].str.upper()
+    pubchem = pubchem.drop(columns=["cids", "inconclusive", "unspecified"])
+    pubchem = pubchem.rename(columns={"pathogen_code": "pathogen", "aid": "name", "actives": "positives"})
+    pubchem["source"] = "pubchem"
+    pubchem["target_type"] = pubchem["target_type"].str.upper()
 
     df = pd.concat([chembl, pubchem], ignore_index=True)
     print(f"Loaded metadata: {len(df)} datasets across {df['pathogen'].nunique()} pathogens "
           f"({len(chembl)} ChEMBL, {len(pubchem)} PubChem)")
     return df
+
+
+def flag_chembl_duplicates(metadata: pd.DataFrame) -> pd.DataFrame:
+    chembl_to_pubchem = {
+        str(row["chembl_id"]): row
+        for _, row in metadata[metadata["source"] == "pubchem"].iterrows()
+        if pd.notna(row["chembl_id"])
+    }
+    metadata["keep"] = True
+    if not chembl_to_pubchem:
+        return metadata
+
+    pattern = "|".join(chembl_to_pubchem)
+    chembl_names = metadata.loc[metadata["source"] == "chembl", "name"]
+    flagged = chembl_names[chembl_names.str.contains(pattern, regex=True)].index
+    metadata.loc[flagged, "keep"] = False
+
+    print(f"Flagged {len(flagged)} ChEMBL dataset(s) as keep=False (superseded by PubChem assays):")
+    for _, crow in metadata.loc[flagged].iterrows():
+        prow = next((chembl_to_pubchem[cid] for cid in chembl_to_pubchem if cid in crow["name"]), None)
+        pubchem_info = f"AID {int(prow['name'])} ({int(prow['compounds'])} cpds, {int(prow['positives'])} actives)" if prow is not None else "?"
+        print(f"  [{crow['pathogen']}] {crow['name']} ({int(crow['compounds'])} cpds, {int(crow['positives'])} actives)  →  PubChem {pubchem_info}")
+    return metadata
 
 
 # ---------------------------------------------------------------------------
@@ -137,28 +170,27 @@ def _extract_chembl(row: pd.Series) -> pd.DataFrame:
     with zipfile.ZipFile(_chembl_zip_path(row)) as zf:
         with zf.open(inner) as f:
             raw = gzip.open(f).read() if inner.endswith(".gz") else f.read()
-    return pd.read_csv(io.BytesIO(raw))[["smiles", "bin"]]
+    df = pd.read_csv(io.BytesIO(raw))[["smiles", "bin"]]
+    _validate_bin(df, row["name"])
+    return df
 
 
 def _extract_pubchem(row: pd.Series) -> pd.DataFrame | None:
-    assay_path = os.path.join(RAW_DIR, "pubchem", row["pathogen"], f"{row['name']}.csv")
+    assay_path = os.path.join(RAW_DIR, "pubchem", row["pathogen"], f"{int(row['name'])}.csv")
     if not os.path.exists(assay_path):
         return None
     df = pd.read_csv(assay_path)
-    if "smiles" not in df.columns:
-        return None
-    if "activity" in df.columns:
-        df["bin"] = pd.to_numeric(df["activity"], errors="coerce")
-    elif "bin" in df.columns:
-        pass
-    else:
+    if "smiles" not in df.columns or "bin" not in df.columns:
         return None
     df = df[["smiles", "bin"]].dropna(subset=["smiles"])
-    return df[df["bin"].isin([0, 1])].reset_index(drop=True)
+    _validate_bin(df, row["name"])
+    return df.reset_index(drop=True)
 
 
 def extract_datasets(metadata: pd.DataFrame) -> None:
     for _, row in tqdm(metadata.iterrows(), total=len(metadata), desc="Extracting datasets", unit="dataset"):
+        if not row["keep"]:
+            continue
         out_path = os.path.join(OUT_DIR, row["pathogen"], f"{row['name']}.csv")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
@@ -268,6 +300,7 @@ def main(
 ) -> None:
     random.seed(seed)
     metadata = load_metadata(chembl_metadata_path, pubchem_metadata_path)
+    metadata = flag_chembl_duplicates(metadata)
     decoys = load_decoys(decoys_path)
     raw_to_canonical = load_raw_to_canonical(positives_path)
     extract_datasets(metadata)
@@ -290,7 +323,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--pubchem_metadata",
         default=PUBCHEM_METADATA_PATH,
-        help="Path to PubChem datasets CSV (default: data/processed/pubchem/02_bioassays_to_model.csv).",
+        help="Path to PubChem datasets CSV (default: data/processed/pubchem/02_pubchem_datasets_organism.csv).",
     )
     parser.add_argument(
         "--decoys",

@@ -3,7 +3,7 @@ Step 03 — Extract active compounds from ChEMBL and PubChem datasets.
 
 Reads processed dataset metadata from:
   - data/processed/chembl/01_chembl_datasets_all.csv
-  - data/processed/pubchem/02_bioassays_to_model.csv
+  - data/processed/pubchem/02_pubchem_datasets_organism.csv
 
 For each ChEMBL dataset, opens the corresponding zip archive and extracts
 SMILES with bin == 1.
@@ -56,7 +56,7 @@ from tqdm import tqdm
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.join(ROOT, "..")
 CHEMBL_DATASETS = os.path.join(REPO_ROOT, "data", "processed", "chembl", "01_chembl_datasets_all.csv")
-PUBCHEM_DATASETS = os.path.join(REPO_ROOT, "data", "processed", "pubchem", "02_bioassays_to_model.csv")
+PUBCHEM_DATASETS = os.path.join(REPO_ROOT, "data", "processed", "pubchem", "02_pubchem_datasets_organism.csv")
 OUTPUT_PATH = os.path.join(REPO_ROOT, "output", "results", "03_selected_positives.csv")
 
 
@@ -87,30 +87,23 @@ def read_chembl_dataset(row: pd.Series) -> pd.Series | None:
 
 
 def read_pubchem_dataset(row: pd.Series) -> pd.Series | None:
-    assay_path = os.path.join(REPO_ROOT, "data", "raw", "pubchem", row["pathogen"], f"{row['name']}.csv")
+    assay_path = os.path.join(REPO_ROOT, "data", "raw", "pubchem", row["pathogen_code"], f"{int(row['aid'])}.csv")
     if not os.path.exists(assay_path):
         return None
-
     df = pd.read_csv(assay_path)
-    if "smiles" not in df.columns:
+    if "smiles" not in df.columns or "bin" not in df.columns:
         return None
-
-    if "activity" in df.columns:
-        return df.loc[pd.to_numeric(df["activity"], errors="coerce") == 1, "smiles"].dropna()
-    elif "bin" in df.columns:
-        return df.loc[df["bin"] == 1, "smiles"].dropna()
-    else:
-        return None
+    return df.loc[df["bin"] == 1, "smiles"].dropna()
 
 
-def collect_actives(meta: pd.DataFrame, reader, source: str) -> dict[str, set[str]]:
+def collect_actives(meta: pd.DataFrame, reader, source: str, pathogen_col: str = "pathogen", name_col: str = "name") -> dict[str, set[str]]:
     actives: dict[str, set[str]] = defaultdict(set)
 
     for _, row in tqdm(meta.iterrows(), total=len(meta), desc=source, unit="dataset"):
         smiles_series = reader(row)
         if smiles_series is None or smiles_series.empty:
             continue
-        tag = f"{source}|{row['pathogen']}|{row['name']}"
+        tag = f"{source}|{row[pathogen_col]}|{row[name_col]}"
         for smi in smiles_series.unique():
             actives[smi].add(tag)
     return actives
@@ -173,7 +166,7 @@ def main(chembl_datasets_path: str, pubchem_datasets_path: str, split_size: int)
     pubchem_meta = pd.read_csv(pubchem_datasets_path)
 
     chembl_actives = collect_actives(chembl_meta, read_chembl_dataset, source="chembl")
-    pubchem_actives = collect_actives(pubchem_meta, read_pubchem_dataset, source="pubchem")
+    pubchem_actives = collect_actives(pubchem_meta, read_pubchem_dataset, source="pubchem", pathogen_col="pathogen_code", name_col="aid")
     actives = merge_actives(chembl_actives, pubchem_actives)
 
     result = canonicalize_actives(actives)
@@ -200,7 +193,7 @@ if __name__ == "__main__":
         "--pubchem_datasets",
         type=str,
         default=PUBCHEM_DATASETS,
-        help="Path to the PubChem datasets CSV (default: data/processed/pubchem/02_bioassays_to_model.csv).",
+        help="Path to the PubChem datasets CSV (default: data/processed/pubchem/02_pubchem_datasets_organism.csv).",
     )
     parser.add_argument(
         "--split_size",
