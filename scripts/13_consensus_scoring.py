@@ -4,12 +4,14 @@ Step 13 — Consensus scoring of DrugBank compounds per pathogen.
 Reads per-pathogen rank matrices from output/results/12_drugbank/{pathogen}.csv
 and computes a weighted consensus score per compound using 8 weights:
   W1–W7: model quality weights from 10_reports.csv
-  W8:    piecewise linear function of rank vs decision_cutoff_rank (0→0, cutoff→0.5, 1→1)
+  W8:    piecewise linear function of prob_rank vs decision_cutoff_rank (0→0, cutoff→0.5, 1→1)
 
-weight[i,m] = mean(W1..W7, W8[i,m])
-score[i]    = mean_m(rank[i,m] * weight[i,m])
+weight[i,m] = average(W1..W7, W8[i,m], weights=W_WEIGHTS)
+score[i]    = sum_m(prob_rank[i,m] * weight[i,m]) / sum_m(weight[i,m])
 
-Output: output/results/13_consensus/{pathogen}.csv — smiles, consensus_score, model columns.
+Output: output/results/13_consensus/{pathogen}.csv
+        smiles | excluded_{model} x N | consensus_score
+        N+1 score columns: one per model exclusion, then full consensus last.
 
 Usage:
     python scripts/13_consensus_scoring.py
@@ -28,19 +30,31 @@ REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 DEFAULT_IN_DIR  = os.path.join(REPO_ROOT, "output", "results", "12_drugbank")
 DEFAULT_OUT_DIR = os.path.join(REPO_ROOT, "output", "results", "13_consensus")
 REPORTS_PATH    = os.path.join(REPO_ROOT, "output", "results", "10_reports.csv")
-W_COLS          = ["w1", "w2", "w3", "w4", "w5", "w6", "w7"]
+W_COLS    = ["w1", "w2", "w3", "w4", "w5", "w6", "w7"]
+W_WEIGHTS = np.ones(len(W_COLS) + 1)  # one per w1..w7 + w8; change here to reweight
 
 
-def _score(ranks: np.ndarray, w1_7: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
+def _compute_w8(prob_ranks: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
+    """Piecewise linear weight: prob_rank=0→0, cutoff→0.5, 1→1."""
     c = cutoffs[np.newaxis, :]
-    nan = np.isnan(c)
-    c   = np.where(nan, 0.5, c)
-    w8  = np.where(ranks <= c,
-                   0.5 * ranks / np.clip(c, 1e-9, 1),
-                   0.5 + 0.5 * (ranks - c) / np.clip(1 - c, 1e-9, 1))
-    w8  = np.where(nan, ranks, w8)
-    w   = (w1_7[np.newaxis, :] + w8) / 8.0
-    return (ranks * w).mean(axis=1)
+    return np.where(
+        prob_ranks <= c,
+        0.5 * prob_ranks / np.clip(c, 1e-9, 1),
+        0.5 + 0.5 * (prob_ranks - c) / np.clip(1 - c, 1e-9, 1),
+    )
+
+
+def _score(prob_ranks: np.ndarray, w_quality: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
+    # w_quality: (n_models, 7) — quality weights from 10_reports, one column per W_COLS
+    w8 = _compute_w8(prob_ranks, cutoffs)
+
+    n_compounds, n_models = prob_ranks.shape
+    w_all = np.empty((n_compounds, n_models, len(W_WEIGHTS)))
+    w_all[:, :, :len(W_COLS)] = w_quality   # (n_models, 7) broadcasts over the compounds axis
+    w_all[:, :,  len(W_COLS)] = w8
+
+    w = np.average(w_all, axis=-1, weights=W_WEIGHTS)  # (n_compounds, n_models)
+    return (prob_ranks * w).sum(axis=1) / w.sum(axis=1)
 
 
 def run(pathogen: str, in_dir: str, reports_df: pd.DataFrame, out_path: str) -> None:
@@ -49,27 +63,37 @@ def run(pathogen: str, in_dir: str, reports_df: pd.DataFrame, out_path: str) -> 
         print(f"  [SKIP] {pathogen}: {src} not found")
         return
 
-    df   = pd.read_csv(src)
-    rows = reports_df[reports_df["pathogen"] == pathogen].set_index("model_name")
-    cols = [c for c in df.columns if c != "smiles" and c in rows.index]
+    df             = pd.read_csv(src)
+    model_reports  = reports_df[reports_df["pathogen"] == pathogen].set_index("model_name")
+    model_cols     = [col for col in df.columns if col != "smiles" and col in model_reports.index]
 
-    if not cols:
-        print(f"  [SKIP] {pathogen}: no models overlap with 10_reports.csv")
+    if len(model_cols) < 2:
+        print(f"  [SKIP] {pathogen}: {len(model_cols)} model(s) — consensus requires at least 2")
         return
 
-    ranks   = df[cols].fillna(0.0).values
-    w1_7    = np.array([rows.loc[m, W_COLS].sum() for m in cols])
-    cutoffs = np.array([rows.loc[m, "decision_cutoff_rank"] for m in cols], dtype=float)
-    scores  = _score(ranks, w1_7, cutoffs)
+    prob_ranks = df[model_cols].fillna(0.0).values
+    w_quality  = np.array([model_reports.loc[m, W_COLS].values for m in model_cols], dtype=float)
+    cutoffs    = np.array([model_reports.loc[m, "decision_cutoff_rank"] for m in model_cols], dtype=float)
 
-    out = pd.DataFrame({"smiles": df["smiles"], "consensus_score": scores.round(4)})
-    for c in cols:
-        out[c] = df[c].values
-    out = out.sort_values("consensus_score", ascending=False).reset_index(drop=True)
+    result = {"smiles": df["smiles"]}
+
+    # Leave-one-out: score using all models except model i
+    for i, model in enumerate(model_cols):
+        other = [j for j in range(len(model_cols)) if j != i]
+        result[f"excluded_{model}"] = _score(
+            prob_ranks[:, other],
+            w_quality[other, :],
+            cutoffs[other],
+        ).round(4)
+
+    # Full consensus: score using all models
+    result["consensus_score"] = _score(prob_ranks, w_quality, cutoffs).round(4)
+
+    out = pd.DataFrame(result)
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     out.to_csv(out_path, index=False)
-    print(f"  [{pathogen}] {len(cols)} models -> {len(out)} compounds -> {out_path}")
+    print(f"  [{pathogen}] {len(model_cols)} models -> {len(out)} compounds -> {out_path}")
 
 
 def main() -> None:
