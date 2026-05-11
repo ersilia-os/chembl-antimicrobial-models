@@ -82,6 +82,8 @@ def load_metadata(chembl_path: str, pubchem_path: str) -> pd.DataFrame:
     pubchem["target_type"] = pubchem["target_type"].str.upper()
 
     df = pd.concat([chembl, pubchem], ignore_index=True)
+    if "auroc" in df.columns:
+        df = df.rename(columns={"auroc": "auroc_baseline"})
     print(f"Loaded metadata: {len(df)} datasets across {df['pathogen'].nunique()} pathogens "
           f"({len(chembl)} ChEMBL, {len(pubchem)} PubChem)")
     return df
@@ -224,7 +226,7 @@ def augment_datasets(
     meta["decoys"] = 0
     meta["final_ratio"] = meta["ratio"]
 
-    high_mask = meta["ratio"] > HIGH_RATIO_THRESHOLD
+    high_mask = (meta["ratio"] > HIGH_RATIO_THRESHOLD) & meta["keep"]
     print(f"Augmenting {high_mask.sum()} datasets with ratio > {HIGH_RATIO_THRESHOLD}")
 
     for idx, row in tqdm(meta[high_mask].iterrows(), total=high_mask.sum(), desc="Augmenting datasets", unit="dataset"):
@@ -306,9 +308,13 @@ def main(
     extract_datasets(metadata)
     enriched = augment_datasets(metadata, decoys, raw_to_canonical)
     enriched = enriched.sort_values("pathogen").reset_index(drop=True)
+    n_dropped = (~enriched["keep"]).sum()
+    enriched = enriched[enriched["keep"]].drop(columns=["keep"]).reset_index(drop=True)
+    if n_dropped:
+        print(f"Dropped {n_dropped} keep=False dataset(s) from metadata")
     os.makedirs(os.path.dirname(META_OUT_PATH), exist_ok=True)
     enriched.to_csv(META_OUT_PATH, index=False)
-    print(f"Saved enriched metadata to {META_OUT_PATH}")
+    print(f"Saved enriched metadata ({len(enriched)} datasets) to {META_OUT_PATH}")
 
 
 if __name__ == "__main__":

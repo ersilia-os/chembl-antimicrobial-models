@@ -15,7 +15,7 @@ conda activate ./envs/camm
 
 > **Note:** Environment creation may take 5–10 minutes.
 
-The `--prefix ./envs/camm` flag places the environment inside the repository directory. This is intentional: on HPC clusters, only the shared filesystem is visible to compute nodes, so the environment must live alongside the code rather than in the default local conda path. Two pipeline steps (04 and 08) are designed to run directly on the cluster to allow for parallelization — see the [Pipeline overview](#pipeline-overview) section below.
+The `--prefix ./envs/camm` flag places the environment inside the repository directory. This is intentional: on HPC clusters, only the shared filesystem is visible to compute nodes, so the environment must live alongside the code rather than in the default local conda path. Two pipeline steps (05 and 09) are designed to run directly on the cluster to allow for parallelization — see the [Pipeline overview](#pipeline-overview) section below.
 
 ### Data download
 
@@ -62,6 +62,7 @@ eosvc download --path output
 | 10 | `scripts/10_aggregate_reports.py` | Iterates over datasets from `07_datasets_metadata.csv`, skips incomplete runs (< 5 folds), and writes one summarised row per dataset to `output/results/10_reports.csv`; reports mean/std AUROC/AUPRC/BEDROC, per-descriptor OOF AUCs, seven model-quality weights (w1–w7), `final_weight`, `final_normalized_weight`, decision cutoff, model sizes, portfolio, and aggregated predict_rank scores |
 | 11 | `scripts/11_download_drugbank.py` | Downloads DrugBank SMILES from [`ersilia-os/sars-cov-2-chemspace`](https://github.com/ersilia-os/sars-cov-2-chemspace); default output `data/processed/10_drugbank_smiles.csv`; `--only_smiles` returns a single deduplicated SMILES column sorted alphabetically; `--output` overrides the destination path |
 | 12 | `scripts/12_predict_drugbank.py` | Loads all trained models for a given pathogen and runs `predict_rank` on every DrugBank compound; model order follows `10_reports.csv`; outputs one CSV per pathogen with one column per model; `--pathogen <code>` for a single pathogen, `--all_pathogens` to iterate all in metadata order |
+| 13 | `scripts/13_consensus_scoring.py` | Reads per-pathogen rank matrices from step 12 (`output/results/12_drugbank/{pathogen}.csv`); looks up each model's `final_normalized_weight` from `10_reports.csv`; computes a weighted mean consensus score; writes `output/results/13_consensus/{pathogen}.csv` (columns: `smiles`, `consensus_score`, sorted descending); `--pathogen <code>` for a single pathogen, `--all_pathogens` to iterate all in metadata order |
 
 Steps 05 and 09 are static SLURM scripts designed to run on an HPC cluster; all other scripts run locally.
 
@@ -76,7 +77,7 @@ chembl-antimicrobial-models/
 │   └── processed/              # Merged dataset metadata per pathogen
 ├── envs/
 │   └── camm/                   # Project conda env (gitignored; created with --prefix)
-├── scripts/                    # Pipeline scripts (01–12)
+├── scripts/                    # Pipeline scripts (01–13)
 ├── notebooks/                  # Exploratory notebooks
 └── output/
     └── results/
@@ -94,9 +95,10 @@ chembl-antimicrobial-models/
         ├── 09_logs/                         # SLURM job logs for model training
         ├── 10_reports.csv                   # One summarised row per dataset: model_name, metrics, weights, decision cutoff, portfolio, predict_rank scores
         ├── 12_drugbank/                     # Per-pathogen DrugBank rank predictions (one CSV per pathogen)
+        ├── 13_consensus/                    # Per-pathogen consensus scores (smiles, consensus_score)
 └── data/
     └── processed/
-        └── 10_drugbank_smiles.csv           # DrugBank SMILES (downloaded by step 10)
+        └── 10_drugbank_smiles.csv           # DrugBank SMILES (downloaded by step 11)
 ```
 
 ## Weighting strategy

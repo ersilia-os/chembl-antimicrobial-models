@@ -10,7 +10,7 @@
 #SBATCH --ntasks=1
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=8G
+#SBATCH --mem=4G
 #SBATCH --output=output/results/05_logs/%x_%a.out
 #SBATCH --partition=spot_cpu
 #SBATCH --nodelist=irbccn16,irbccn41,irbccn42

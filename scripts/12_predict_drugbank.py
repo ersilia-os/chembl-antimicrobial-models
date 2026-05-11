@@ -1,9 +1,18 @@
 """
-Step 12 — Predict DrugBank ranks for all models of a given pathogen.
+Step 12 — Predict DrugBank ranks for trained models.
 
 Uses the lazy-qsar multi-model predict() API so descriptors are computed
 once per featurizer type and shared across all models, rather than
 recomputing them for each model independently.
+
+--pathogen:      predict for one pathogen; output is one CSV per pathogen.
+--all_pathogens: build descriptors once and score ALL models across ALL
+                 pathogens in a single pass, then split into one CSV per
+                 pathogen (same format as --pathogen). The combined
+                 intermediate file is removed after splitting.
+
+Both modes write to output/results/12_drugbank/{pathogen}.csv with columns:
+    smiles, model_name_1, model_name_2, ...
 
 Model order follows 10_reports.csv (which mirrors 07_datasets_metadata.csv).
 
@@ -26,7 +35,7 @@ REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 # Point lazyqsar to the project weights directory (mirrors what 09_run_models.sh does via $HOME).
 os.environ["HOME"] = os.path.join(REPO_ROOT, "output", "results", "08_weights")
 
-DEFAULT_DRUGBANK   = os.path.join(REPO_ROOT, "data", "processed", "10_drugbank_smiles.csv")
+DEFAULT_DRUGBANK   = os.path.join(REPO_ROOT, "data", "processed", "11_drugbank_smiles.csv")
 DEFAULT_MODELS_DIR = os.path.join(REPO_ROOT, "output", "results", "09_models")
 DEFAULT_OUT_DIR    = os.path.join(REPO_ROOT, "output", "results", "12_drugbank")
 REPORTS_PATH       = os.path.join(REPO_ROOT, "output", "results", "10_reports.csv")
@@ -47,6 +56,54 @@ def _ordered_pathogens() -> list[str]:
     """Return pathogens in the order they first appear in 10_reports.csv."""
     reports = pd.read_csv(REPORTS_PATH)
     return list(dict.fromkeys(reports["pathogen"].tolist()))
+
+
+def run_all_pathogens(drugbank_csv: str, models_dir: str, out_dir: str) -> None:
+    pathogens = _ordered_pathogens()
+    model_dir_dict = {}
+    for pathogen in pathogens:
+        pathogen_dir = os.path.join(models_dir, pathogen)
+        if not os.path.isdir(pathogen_dir):
+            print(f"  [SKIP] {pathogen}: no model directory")
+            continue
+        for name in _ordered_model_names(pathogen, models_dir):
+            model_path = os.path.join(pathogen_dir, name)
+            col_name = f"{pathogen}/{name}"
+            model_dir_dict[model_path] = col_name
+
+    if not model_dir_dict:
+        print("No models found across any pathogen.")
+        return
+
+    n_models = len(model_dir_dict)
+    print(f"\n[all_pathogens] {n_models} models total")
+
+    os.makedirs(out_dir, exist_ok=True)
+    tmp_path = os.path.join(out_dir, "_tmp_all_pathogens.csv")
+    lqsar_predict(
+        model_dir=model_dir_dict,
+        input_csv=drugbank_csv,
+        output_csv=tmp_path,
+        predict_type="rank",
+    )
+
+    smiles = pd.read_csv(drugbank_csv)["smiles"].tolist()
+    df = pd.read_csv(tmp_path)
+    df.insert(0, "smiles", smiles)
+
+    for pathogen in pathogens:
+        prefix = f"{pathogen}/"
+        cols = [c for c in df.columns if c.startswith(prefix)]
+        if not cols:
+            continue
+        per_pathogen_df = df[["smiles"] + cols].rename(
+            columns={c: c[len(prefix):] for c in cols}
+        )
+        out_path = os.path.join(out_dir, f"{pathogen}.csv")
+        per_pathogen_df.to_csv(out_path, index=False)
+        print(f"  [{pathogen}] {len(smiles)} rows x {len(cols)} models -> {out_path}")
+
+    os.remove(tmp_path)
 
 
 def run_pathogen(pathogen: str, drugbank_csv: str, models_dir: str, out_path: str) -> None:
@@ -91,16 +148,14 @@ def main() -> None:
     parser.add_argument("--drugbank",   default=DEFAULT_DRUGBANK,   help="DrugBank SMILES CSV")
     parser.add_argument("--models_dir", default=DEFAULT_MODELS_DIR, help="Base directory for trained models")
     parser.add_argument("--output",     default=None,
-                        help="Output CSV path (single pathogen only)")
+                        help="Output CSV path (--pathogen mode only)")
     args = parser.parse_args()
 
     n_compounds = len(pd.read_csv(args.drugbank))
     print(f"DrugBank: {n_compounds} compounds")
 
     if args.all_pathogens:
-        for pathogen in _ordered_pathogens():
-            out_path = os.path.join(DEFAULT_OUT_DIR, f"{pathogen}.csv")
-            run_pathogen(pathogen, args.drugbank, args.models_dir, out_path)
+        run_all_pathogens(args.drugbank, args.models_dir, DEFAULT_OUT_DIR)
     else:
         out_path = args.output or os.path.join(DEFAULT_OUT_DIR, f"{args.pathogen}.csv")
         run_pathogen(args.pathogen, args.drugbank, args.models_dir, out_path)
