@@ -66,7 +66,7 @@ def _filter_compounds(df: pd.DataFrame, smiles_col: str) -> pd.DataFrame:
     print(f"  Invalid SMILES  : {n_invalid}")
     print(f"  Inorganic (no C): {n_inorganic}")
     print(f"  MW > {MW_CAP:.0f} Da    : {n_heavy}")
-    print(f"  Total filtered  : {n_total - n_kept} / {n_total} -> {n_kept} compounds kept")
+    print(f"  Total filtered  : {n_total - n_kept} / {n_total} -> {n_kept} compounds kept (before dedup)")
     return df[keep].reset_index(drop=True)
 
 
@@ -86,7 +86,11 @@ def main() -> None:
     df = _filter_compounds(df, smiles_col)
 
     if not args.keep_all_columns:
-        df = pd.DataFrame({"smiles": sorted(df[smiles_col].unique())})
+        unique_smiles = sorted(df[smiles_col].unique())
+        n_dupes = len(df) - len(unique_smiles)
+        if n_dupes:
+            print(f"  Duplicates      : {n_dupes}")
+        df = pd.DataFrame({"smiles": unique_smiles})
 
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     df.to_csv(args.output, index=False)
