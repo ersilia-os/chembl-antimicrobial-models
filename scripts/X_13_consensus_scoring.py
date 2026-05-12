@@ -39,8 +39,8 @@ def _compute_w8(prob_ranks: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
     c = cutoffs[np.newaxis, :]
     return np.where(
         prob_ranks <= c,
-        0.5 * prob_ranks / np.clip(c, 1e-9, 1),
-        0.5 + 0.5 * (prob_ranks - c) / np.clip(1 - c, 1e-9, 1),
+        0.5 * prob_ranks / c,
+        0.5 + 0.5 * (prob_ranks - c) / (1 - c),
     )
 
 

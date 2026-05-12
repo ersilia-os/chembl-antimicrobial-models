@@ -24,6 +24,7 @@ Usage:
 
 import argparse
 import os
+import time
 
 import pandas as pd
 
@@ -69,11 +70,11 @@ def run_all_pathogens(drugbank_csv: str, models_dir: str, out_dir: str) -> None:
         for name in _ordered_model_names(pathogen, models_dir):
             model_path = os.path.join(pathogen_dir, name)
             col_name = f"{pathogen}/{name}"
-            model_dir_dict[model_path] = col_name
+            model_dir_dict[col_name] = model_path
 
     if not model_dir_dict:
         print("No models found across any pathogen.")
-        return
+        return 0
 
     n_models = len(model_dir_dict)
     print(f"\n[all_pathogens] {n_models} models total")
@@ -104,23 +105,24 @@ def run_all_pathogens(drugbank_csv: str, models_dir: str, out_dir: str) -> None:
         print(f"  [{pathogen}] {len(smiles)} rows x {len(cols)} models -> {out_path}")
 
     os.remove(tmp_path)
+    return n_models
 
 
-def run_pathogen(pathogen: str, drugbank_csv: str, models_dir: str, out_path: str) -> None:
+def run_pathogen(pathogen: str, drugbank_csv: str, models_dir: str, out_path: str) -> int:
     pathogen_dir = os.path.join(models_dir, pathogen)
     if not os.path.isdir(pathogen_dir):
         print(f"  [SKIP] {pathogen}: no model directory at {pathogen_dir}")
-        return
+        return 0
 
     model_names = _ordered_model_names(pathogen, models_dir)
     if not model_names:
         print(f"  [SKIP] {pathogen}: no models found in reports or on disk")
-        return
+        return 0
 
     print(f"\n[{pathogen}] {len(model_names)} models: {model_names}")
 
     model_dir_dict = {
-        os.path.join(pathogen_dir, name): name for name in model_names
+        name: os.path.join(pathogen_dir, name) for name in model_names
     }
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
@@ -137,6 +139,7 @@ def run_pathogen(pathogen: str, drugbank_csv: str, models_dir: str, out_path: st
     df.to_csv(out_path, index=False)
 
     print(f"  Saved {len(smiles)} rows x {len(model_names)} models -> {out_path}")
+    return len(model_names)
 
 
 def main() -> None:
@@ -154,11 +157,22 @@ def main() -> None:
     n_compounds = len(pd.read_csv(args.drugbank))
     print(f"DrugBank: {n_compounds} compounds")
 
+    t0 = time.time()
     if args.all_pathogens:
-        run_all_pathogens(args.drugbank, args.models_dir, DEFAULT_OUT_DIR)
+        n_models = run_all_pathogens(args.drugbank, args.models_dir, DEFAULT_OUT_DIR)
     else:
         out_path = args.output or os.path.join(DEFAULT_OUT_DIR, f"{args.pathogen}.csv")
-        run_pathogen(args.pathogen, args.drugbank, args.models_dir, out_path)
+        n_models = run_pathogen(args.pathogen, args.drugbank, args.models_dir, out_path)
+    elapsed_min = (time.time() - t0) / 60
+
+    expected_min = round(elapsed_min * 10_000 / n_compounds, 1) if n_compounds else float("nan")
+    print(
+        f"\n--- Inference summary ---"
+        f"\n  Compounds : {n_compounds}"
+        f"\n  Models    : {n_models}"
+        f"\n  Total time: {elapsed_min:.1f} min"
+        f"\n  Est. time for 10,000 compounds: {expected_min} min"
+    )
 
 
 if __name__ == "__main__":
