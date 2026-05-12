@@ -9,7 +9,7 @@ prob_ranks relate to B's using four metric families:
 
 Input:  output/results/12_drugbank/{pathogen}.csv
 Output: output/results/15_recapitulate_models/{pathogen}.csv
-        model_a | model_b | spearman | pearson |
+        model_scorer | model_binarized | spearman | pearson |
         hit_overlap_10 | hit_overlap_100 | hit_overlap_500 |
         auroc_0.1pct | auroc_1pct | auroc_5pct
 
@@ -38,14 +38,11 @@ THRESHOLDS     = [0.001, 0.01, 0.05]
 THRESHOLD_SFXS = ["0.1pct", "1pct", "5pct"]
 
 
-def _hit_overlap(scores_a: np.ndarray, scores_b: np.ndarray, top_n: int) -> float:
-    """Raw fraction of compounds shared in the top-N of both models."""
-    n = len(scores_a)
-    if n <= top_n:
-        return 1.0
+def _hit_overlap(scores_a: np.ndarray, scores_b: np.ndarray, top_n: int) -> int:
+    """Number of compounds shared in the top-N of both models."""
     top_a = set(np.argsort(scores_a)[::-1][:top_n])
     top_b = set(np.argsort(scores_b)[::-1][:top_n])
-    return len(top_a & top_b) / top_n
+    return len(top_a & top_b)
 
 
 def _auroc_at_threshold(scores_a: np.ndarray, scores_b: np.ndarray, t: float) -> float:
@@ -81,8 +78,8 @@ def run(pathogen: str, in_dir: str, out_dir: str) -> None:
                 continue
             a, b = scores[m_a], scores[m_b]
             row = {
-                "model_a":         m_a,
-                "model_b":         m_b,
+                "model_scorer":    m_a,
+                "model_binarized": m_b,
                 "spearman":        spearmanr(a, b).statistic,
                 "pearson":         pearsonr(a, b).statistic,
                 "hit_overlap_10":  _hit_overlap(a, b, 10),

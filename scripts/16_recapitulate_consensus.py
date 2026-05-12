@@ -46,14 +46,11 @@ THRESHOLDS     = [0.001, 0.01, 0.05]
 THRESHOLD_SFXS = ["0.1pct", "1pct", "5pct"]
 
 
-def _hit_overlap(scores_a: np.ndarray, scores_b: np.ndarray, top_n: int) -> float:
-    """Raw fraction of compounds shared in the top-N of both score arrays."""
-    n = len(scores_a)
-    if n <= top_n:
-        return 1.0
+def _hit_overlap(scores_a: np.ndarray, scores_b: np.ndarray, top_n: int) -> int:
+    """Number of compounds shared in the top-N of both score arrays."""
     top_a = set(np.argsort(scores_a)[::-1][:top_n])
     top_b = set(np.argsort(scores_b)[::-1][:top_n])
-    return len(top_a & top_b) / top_n
+    return len(top_a & top_b)
 
 
 def _auroc_at_threshold(scores_a: np.ndarray, scores_b: np.ndarray, t: float) -> float:
