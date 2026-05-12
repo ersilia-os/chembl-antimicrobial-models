@@ -61,6 +61,11 @@ def main() -> None:
         default=DEFAULT_PATH,
         help=f"Directory for weight caching; weights land in <path>/.lazyqsar/ (default: {DEFAULT_PATH})",
     )
+    parser.add_argument(
+        "--subset",
+        action="store_true",
+        help="Restrict SLURM array indices to abaumannii, saureus, ecoli and calbicans only",
+    )
     args = parser.parse_args()
 
     cache_dir = Path(args.path).expanduser().resolve() / ".lazyqsar"
@@ -81,6 +86,11 @@ def main() -> None:
 
     import pandas as pd
     df = pd.read_csv(metadata_path)
+
+    if args.subset:
+        keep = {"abaumannii", "saureus", "ecoli", "calbicans"}
+        df   = df[df["pathogen"].isin(keep)]
+
     large = df.index[df["final_compounds"] > 30_000].tolist()
     small = df.index[df["final_compounds"] <= 30_000].tolist()
 
