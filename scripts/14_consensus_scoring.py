@@ -1,5 +1,5 @@
 """
-Step 13 — Consensus scoring of DrugBank compounds per pathogen.
+Step 14 — Consensus scoring of DrugBank compounds per pathogen.
 
 Reads per-pathogen rank matrices from output/results/12_drugbank/{pathogen}.csv
 and computes a weighted consensus score per compound using 8 weights:
@@ -9,13 +9,14 @@ and computes a weighted consensus score per compound using 8 weights:
 weight[i,m] = average(W1..W7, W8[i,m], weights=W_WEIGHTS)
 score[i]    = sum_m(prob_rank[i,m] * weight[i,m]) / sum_m(weight[i,m])
 
-Output: output/results/13_consensus/{pathogen}.csv
+Output: output/results/14_consensus/{pathogen}.csv
+        output/results/14_consensus/{pathogen}_unweighted.csv
         smiles | excluded_{model} x N | consensus_score
         N+1 score columns: one per model exclusion, then full consensus last.
 
 Usage:
-    python scripts/13_consensus_scoring.py
-    python scripts/13_consensus_scoring.py --pathogen ecoli
+    python scripts/14_consensus_scoring.py
+    python scripts/14_consensus_scoring.py --pathogen ecoli
 """
 
 import argparse
@@ -28,7 +29,7 @@ ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
 DEFAULT_IN_DIR  = os.path.join(REPO_ROOT, "output", "results", "12_drugbank")
-DEFAULT_OUT_DIR = os.path.join(REPO_ROOT, "output", "results", "13_consensus")
+DEFAULT_OUT_DIR = os.path.join(REPO_ROOT, "output", "results", "14_consensus")
 REPORTS_PATH    = os.path.join(REPO_ROOT, "output", "results", "10_reports.csv")
 W_COLS    = ["w1", "w2", "w3", "w4", "w5", "w6", "w7"]
 W_WEIGHTS = np.ones(len(W_COLS) + 1)  # one per w1..w7 + w8; change here to reweight
@@ -45,16 +46,28 @@ def _compute_w8(prob_ranks: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
 
 
 def _score(prob_ranks: np.ndarray, w_quality: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
-    # w_quality: (n_models, 7) — quality weights from 10_reports, one column per W_COLS
-    w8 = _compute_w8(prob_ranks, cutoffs)
+    # prob_ranks : (n_compounds, n_models) — normalized rank of each compound under each model
+    # w_quality  : (n_models, 7)          — model-level quality weights (w1–w7) from 10_reports
+    # cutoffs    : (n_models,)            — decision_cutoff_rank per model, used to compute w8
 
+    # w8 is the only per-compound weight: it rewards compounds ranked above the decision cutoff
+    w8 = _compute_w8(prob_ranks, cutoffs)  # (n_compounds, n_models)
+
+    # Stack all 8 weights into a single tensor so we can average them in one call
     n_compounds, n_models = prob_ranks.shape
     w_all = np.empty((n_compounds, n_models, len(W_WEIGHTS)))
-    w_all[:, :, :len(W_COLS)] = w_quality   # (n_models, 7) broadcasts over the compounds axis
-    w_all[:, :,  len(W_COLS)] = w8
+    w_all[:, :, :len(W_COLS)] = w_quality  # w1–w7: same for every compound, broadcast over axis 0
+    w_all[:, :,  len(W_COLS)] = w8         # w8: varies per compound
 
+    # Collapse the 8 weight dimensions into one scalar per (compound, model)
     w = np.average(w_all, axis=-1, weights=W_WEIGHTS)  # (n_compounds, n_models)
-    return (prob_ranks * w).sum(axis=1) / w.sum(axis=1)
+
+    # Weighted average of prob_ranks across models for each compound
+    return (prob_ranks * w).sum(axis=1) / w.sum(axis=1)  # (n_compounds,)
+
+
+def _score_unweighted(prob_ranks: np.ndarray) -> np.ndarray:
+    return prob_ranks.mean(axis=1)
 
 
 def run(pathogen: str, in_dir: str, reports_df: pd.DataFrame, out_path: str) -> None:
@@ -94,6 +107,16 @@ def run(pathogen: str, in_dir: str, reports_df: pd.DataFrame, out_path: str) -> 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
     out.to_csv(out_path, index=False)
     print(f"  [{pathogen}] {len(model_cols)} models -> {len(out)} compounds -> {out_path}")
+
+    result_unweighted = {"smiles": df["smiles"]}
+    for i, model in enumerate(model_cols):
+        other = [j for j in range(len(model_cols)) if j != i]
+        result_unweighted[f"excluded_{model}"] = _score_unweighted(prob_ranks[:, other]).round(4)
+    result_unweighted["consensus_score"] = _score_unweighted(prob_ranks).round(4)
+
+    unweighted_path = out_path.replace(".csv", "_unweighted.csv")
+    pd.DataFrame(result_unweighted).to_csv(unweighted_path, index=False)
+    print(f"  [{pathogen}] unweighted -> {unweighted_path}")
 
 
 def main() -> None:
