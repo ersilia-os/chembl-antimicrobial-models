@@ -1,7 +1,12 @@
 #!/bin/bash
 # Step 15 — Predict DrugBank compounds using an Ersilia Hub model.
 #
+# NOTE: run this script with a conda environment that has ersilia installed,
+#       NOT camm (ersilia conflicts with lazyqsar's numpy requirement).
+#       Example setup: conda create -n ersilia python=3.10 && pip install ersilia==0.1.58
+#
 # Usage:
+#     conda activate ersilia
 #     bash scripts/15_predict_drugbank_ersilia.sh <model_id>
 #
 # Example:
