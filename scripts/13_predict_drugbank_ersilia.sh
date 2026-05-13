@@ -7,16 +7,18 @@
 #
 # Usage:
 #     conda activate ersilia
-#     bash scripts/13_predict_drugbank_ersilia.sh <model_id>
+#     bash scripts/13_predict_drugbank_ersilia.sh <model_id> [batch_size]
 #
-# Example:
+# Examples:
 #     bash scripts/13_predict_drugbank_ersilia.sh eos4rw4
+#     bash scripts/13_predict_drugbank_ersilia.sh eos18ie 10   # use small batch for heavy models
 
 set -e
 
 model="$1"
+batch_size="${2:-100}"
 if [ -z "$model" ]; then
-    echo "Usage: $0 <model_id>" >&2
+    echo "Usage: $0 <model_id> [batch_size]" >&2
     exit 1
 fi
 
@@ -30,5 +32,5 @@ mkdir -p "$(dirname "$path_to_output")"
 
 ersilia fetch "$model"
 ersilia serve "$model"
-ersilia run -i "$path_to_csv" -o "$path_to_output"
+ersilia run -i "$path_to_csv" -o "$path_to_output" -b "$batch_size"
 ersilia delete "$model"

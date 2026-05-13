@@ -4,13 +4,23 @@ Step 14 — Consensus scoring of DrugBank compounds per pathogen.
 Reads per-pathogen rank matrices from output/results/12_drugbank/{pathogen}.csv
 and computes a weighted consensus score per compound using 8 weights:
   W1–W7: model quality weights from 10_reports.csv
-  W8:    piecewise linear function of prob_rank vs decision_cutoff_rank (0→0, cutoff→0.5, 1→1)
+  W8:    0 at or below decision_cutoff_rank, linear 0→1 above it
 
 weight[i,m] = average(W1..W7, W8[i,m], weights=W_WEIGHTS)
 score[i]    = sum_m(prob_rank[i,m] * weight[i,m]) / sum_m(weight[i,m])
 
+A tanh transformation is then applied to restore the IQR of the consensus scores
+toward the average IQR of the individual model prob_ranks. The steepness k depends
+only on M (number of models) via a saturating-exponential fit:
+  S(M) = 1 + 1.207*(1-exp(-M/6.74)),  k(M) = 2*S(M)
+The same k is used for weighted and unweighted files; the center is the empirical
+median of each file's global consensus_score. Ranks are preserved exactly (tanh is
+strictly monotone). Output values are clipped to [0, 1].
+
 Output: output/results/14_consensus/{pathogen}.csv
         output/results/14_consensus/{pathogen}_unweighted.csv
+        output/results/14_consensus/{pathogen}_transformed.csv
+        output/results/14_consensus/{pathogen}_unweighted_transformed.csv
         smiles | excluded_{model} x N | consensus_score
         N+1 score columns: one per model exclusion, then full consensus last.
 
@@ -34,14 +44,19 @@ REPORTS_PATH    = os.path.join(REPO_ROOT, "output", "results", "10_reports.csv")
 W_COLS    = ["w1", "w2", "w3", "w4", "w5", "w6", "w7"]
 W_WEIGHTS = np.ones(len(W_COLS) + 1)  # one per w1..w7 + w8; change here to reweight
 
+# Saturating-exponential fit for IQR shrinking factor vs number of models
+# S(M) = 1 + _TANH_A*(1-exp(-M/_TANH_TAU)),  k(M) = 2*S(M)
+_TANH_A   = 1.207
+_TANH_TAU = 6.74
+
 
 def _compute_w8(prob_ranks: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
-    """Piecewise linear weight: prob_rank=0→0, cutoff→0.5, 1→1."""
-    c = cutoffs[np.newaxis, :]
+    """Linear weight above decision cutoff: 0 at or below cutoff, 1 at prob_rank=1."""
+    c = np.clip(cutoffs[np.newaxis, :], 0.0, 1.0 - 1e-9)
     return np.where(
         prob_ranks <= c,
-        0.5 * prob_ranks / c,
-        0.5 + 0.5 * (prob_ranks - c) / (1 - c),
+        0.0,
+        (prob_ranks - c) / (1.0 - c),
     )
 
 
@@ -68,6 +83,23 @@ def _score(prob_ranks: np.ndarray, w_quality: np.ndarray, cutoffs: np.ndarray) -
 
 def _score_unweighted(prob_ranks: np.ndarray) -> np.ndarray:
     return prob_ranks.mean(axis=1)
+
+
+def _k_from_n_models(n: int) -> float:
+    """Steepness for the IQR-restoring tanh transform; depends only on number of models."""
+    s = 1.0 + _TANH_A * (1.0 - np.exp(-n / _TANH_TAU))
+    return 2.0 * s
+
+
+def _tanh_transform(x: np.ndarray, k: float, center: float) -> np.ndarray:
+    return np.clip(0.5 + 0.5 * np.tanh(k * (x - center)), 0.0, 1.0)
+
+
+def _apply_transform(df: pd.DataFrame, k: float, center: float) -> pd.DataFrame:
+    out = df.copy()
+    score_cols = [c for c in df.columns if c != "smiles"]
+    out[score_cols] = _tanh_transform(df[score_cols].values, k, center).round(4)
+    return out
 
 
 def run(pathogen: str, in_dir: str, reports_df: pd.DataFrame, out_path: str) -> None:
@@ -114,9 +146,34 @@ def run(pathogen: str, in_dir: str, reports_df: pd.DataFrame, out_path: str) -> 
         result_unweighted[f"excluded_{model}"] = _score_unweighted(prob_ranks[:, other]).round(4)
     result_unweighted["consensus_score"] = _score_unweighted(prob_ranks).round(4)
 
+    uw_df = pd.DataFrame(result_unweighted)
     unweighted_path = out_path.replace(".csv", "_unweighted.csv")
-    pd.DataFrame(result_unweighted).to_csv(unweighted_path, index=False)
+    uw_df.to_csv(unweighted_path, index=False)
     print(f"  [{pathogen}] unweighted -> {unweighted_path}")
+
+    # --- tanh IQR-restoring transformation (k depends only on number of models) ---
+    k             = _k_from_n_models(len(model_cols))
+    avg_model_iqr = float(np.mean([df[m].quantile(0.75) - df[m].quantile(0.25) for m in model_cols]))
+
+    w_cs     = out["consensus_score"]
+    w_center = float(w_cs.median())
+    w_cons_iqr = float(w_cs.quantile(0.75) - w_cs.quantile(0.25))
+    out_t    = _apply_transform(out, k, w_center)
+    t_path   = out_path.replace(".csv", "_transformed.csv")
+    out_t.to_csv(t_path, index=False)
+    w_iqr    = float(out_t["consensus_score"].quantile(0.75) - out_t["consensus_score"].quantile(0.25))
+    print(f"  [{pathogen}] weighted transform:   k={k:.3f}  center={w_center:.3f}  "
+          f"target_IQR={avg_model_iqr:.4f}  consensus_IQR={w_cons_iqr:.4f}  achieved_IQR={w_iqr:.4f}  -> {t_path}")
+
+    uw_cs      = uw_df["consensus_score"]
+    uw_center  = float(uw_cs.median())
+    uw_cons_iqr = float(uw_cs.quantile(0.75) - uw_cs.quantile(0.25))
+    uw_t       = _apply_transform(uw_df, k, uw_center)
+    ut_path    = unweighted_path.replace(".csv", "_transformed.csv")
+    uw_t.to_csv(ut_path, index=False)
+    uw_iqr     = float(uw_t["consensus_score"].quantile(0.75) - uw_t["consensus_score"].quantile(0.25))
+    print(f"  [{pathogen}] unweighted transform: k={k:.3f}  center={uw_center:.3f}  "
+          f"target_IQR={avg_model_iqr:.4f}  consensus_IQR={uw_cons_iqr:.4f}  achieved_IQR={uw_iqr:.4f}  -> {ut_path}")
 
 
 def main() -> None:
