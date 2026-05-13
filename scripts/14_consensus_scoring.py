@@ -44,10 +44,10 @@ REPORTS_PATH    = os.path.join(REPO_ROOT, "output", "results", "10_reports.csv")
 W_COLS    = ["w1", "w2", "w3", "w4", "w5", "w6", "w7"]
 W_WEIGHTS = np.ones(len(W_COLS) + 1)  # one per w1..w7 + w8; change here to reweight
 
-# Saturating-exponential fit for IQR shrinking factor vs number of models
+# Saturating-exponential fit for IQR shrinking factor vs number of models (fitted on 9 pathogens)
 # S(M) = 1 + _TANH_A*(1-exp(-M/_TANH_TAU)),  k(M) = 2*S(M)
-_TANH_A   = 1.207
-_TANH_TAU = 6.74
+_TANH_A   = 1.156
+_TANH_TAU = 6.47
 
 
 def _compute_w8(prob_ranks: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
@@ -92,7 +92,7 @@ def _k_from_n_models(n: int) -> float:
 
 
 def _tanh_transform(x: np.ndarray, k: float, center: float) -> np.ndarray:
-    return np.clip(0.5 + 0.5 * np.tanh(k * (x - center)), 0.0, 1.0)
+    return np.clip(center + 0.5 * np.tanh(k * (x - center)), 0.0, 1.0)
 
 
 def _apply_transform(df: pd.DataFrame, k: float, center: float) -> pd.DataFrame:
