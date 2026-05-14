@@ -12,10 +12,12 @@ score[i]    = sum_m(prob_rank[i,m] * weight[i,m]) / sum_m(weight[i,m])
 A tanh transformation is then applied to restore the IQR of the consensus scores
 toward the average IQR of the individual model prob_ranks. The steepness k depends
 only on M (number of models) via a saturating-exponential fit:
-  S(M) = 1 + 1.207*(1-exp(-M/6.74)),  k(M) = 2*S(M)
-The same k is used for weighted and unweighted files; the center is the empirical
-median of each file's global consensus_score. Ranks are preserved exactly (tanh is
-strictly monotone). Output values are clipped to [0, 1].
+  S(M) = 1 + 1.156*(1-exp(-M/6.47)),  k(M) = 2*S(M)
+The center is fixed at 0.5 (neutral point of the prob_rank scale), making the
+transformation independent of the compound set being scored. Dividing by tanh(k/2)
+normalises the curve through [0,0] and [1,1], guaranteeing scores above 0.5 always
+increase and scores below 0.5 always decrease. Ranks are preserved (tanh is strictly
+monotone). Output is guaranteed in [0, 1] without clipping.
 
 Output: output/results/14_consensus/{pathogen}.csv
         output/results/14_consensus/{pathogen}_unweighted.csv
@@ -91,14 +93,14 @@ def _k_from_n_models(n: int) -> float:
     return 2.0 * s
 
 
-def _tanh_transform(x: np.ndarray, k: float, center: float) -> np.ndarray:
-    return np.clip(center + 0.5 * np.tanh(k * (x - center)), 0.0, 1.0)
+def _tanh_transform(x: np.ndarray, k: float) -> np.ndarray:
+    return 0.5 + 0.5 * np.tanh(k * (x - 0.5)) / np.tanh(k / 2)
 
 
-def _apply_transform(df: pd.DataFrame, k: float, center: float) -> pd.DataFrame:
+def _apply_transform(df: pd.DataFrame, k: float) -> pd.DataFrame:
     out = df.copy()
     score_cols = [c for c in df.columns if c != "smiles"]
-    out[score_cols] = _tanh_transform(df[score_cols].values, k, center).round(4)
+    out[score_cols] = _tanh_transform(df[score_cols].values, k).round(4)
     return out
 
 
@@ -155,25 +157,90 @@ def run(pathogen: str, in_dir: str, reports_df: pd.DataFrame, out_path: str) -> 
     k             = _k_from_n_models(len(model_cols))
     avg_model_iqr = float(np.mean([df[m].quantile(0.75) - df[m].quantile(0.25) for m in model_cols]))
 
-    w_cs     = out["consensus_score"]
-    w_center = float(w_cs.median())
-    w_cons_iqr = float(w_cs.quantile(0.75) - w_cs.quantile(0.25))
-    out_t    = _apply_transform(out, k, w_center)
-    t_path   = out_path.replace(".csv", "_transformed.csv")
+    w_cons_iqr = float(out["consensus_score"].quantile(0.75) - out["consensus_score"].quantile(0.25))
+    out_t      = _apply_transform(out, k)
+    t_path     = out_path.replace(".csv", "_transformed.csv")
     out_t.to_csv(t_path, index=False)
-    w_iqr    = float(out_t["consensus_score"].quantile(0.75) - out_t["consensus_score"].quantile(0.25))
-    print(f"  [{pathogen}] weighted transform:   k={k:.3f}  center={w_center:.3f}  "
+    w_iqr      = float(out_t["consensus_score"].quantile(0.75) - out_t["consensus_score"].quantile(0.25))
+    print(f"  [{pathogen}] weighted transform:   k={k:.3f}  "
           f"target_IQR={avg_model_iqr:.4f}  consensus_IQR={w_cons_iqr:.4f}  achieved_IQR={w_iqr:.4f}  -> {t_path}")
 
-    uw_cs      = uw_df["consensus_score"]
-    uw_center  = float(uw_cs.median())
-    uw_cons_iqr = float(uw_cs.quantile(0.75) - uw_cs.quantile(0.25))
-    uw_t       = _apply_transform(uw_df, k, uw_center)
-    ut_path    = unweighted_path.replace(".csv", "_transformed.csv")
+    uw_cons_iqr = float(uw_df["consensus_score"].quantile(0.75) - uw_df["consensus_score"].quantile(0.25))
+    uw_t        = _apply_transform(uw_df, k)
+    ut_path     = unweighted_path.replace(".csv", "_transformed.csv")
     uw_t.to_csv(ut_path, index=False)
-    uw_iqr     = float(uw_t["consensus_score"].quantile(0.75) - uw_t["consensus_score"].quantile(0.25))
-    print(f"  [{pathogen}] unweighted transform: k={k:.3f}  center={uw_center:.3f}  "
+    uw_iqr      = float(uw_t["consensus_score"].quantile(0.75) - uw_t["consensus_score"].quantile(0.25))
+    print(f"  [{pathogen}] unweighted transform: k={k:.3f}  "
           f"target_IQR={avg_model_iqr:.4f}  consensus_IQR={uw_cons_iqr:.4f}  achieved_IQR={uw_iqr:.4f}  -> {ut_path}")
+
+
+def plot_transform_scenarios(reports_df: pd.DataFrame, in_dir: str, out_dir: str) -> None:
+    """Generate transform_scenarios.png: left=tanh curves for M=2,5,10,20,100;
+    right=M→k fitted curve with real empirical (M, k) points per pathogen."""
+    import matplotlib.pyplot as plt  # local import — not required for scoring
+
+    x      = np.linspace(0, 1, 500)
+    M_show = [2, 5, 10, 20, 100]
+    colors = plt.cm.viridis(np.linspace(0.1, 0.9, len(M_show)))
+
+    # Collect real (M, k_real) per pathogen from output files
+    empirical = {}
+    for pathogen in dict.fromkeys(reports_df["pathogen"]):
+        src  = os.path.join(in_dir, f"{pathogen}.csv")
+        cons = os.path.join(out_dir, f"{pathogen}.csv")
+        if not os.path.isfile(src) or not os.path.isfile(cons):
+            continue
+        df_src  = pd.read_csv(src)
+        df_cons = pd.read_csv(cons)
+        model_names = reports_df[reports_df["pathogen"] == pathogen]["model_name"].values
+        model_cols  = [c for c in df_src.columns if c != "smiles" and c in model_names]
+        if len(model_cols) < 2:
+            continue
+        avg_iqr  = float(np.mean([df_src[m].quantile(0.75) - df_src[m].quantile(0.25) for m in model_cols]))
+        cons_iqr = float(df_cons["consensus_score"].quantile(0.75) - df_cons["consensus_score"].quantile(0.25))
+        if cons_iqr > 0:
+            empirical[pathogen] = (len(model_cols), 2.0 * avg_iqr / cons_iqr)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Left: transformation curves
+    ax = axes[0]
+    for M, c in zip(M_show, colors):
+        k = _k_from_n_models(M)
+        ax.plot(x, _tanh_transform(x, k), color=c, lw=2, label=f"M={M}  (k={k:.2f})")
+    ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5, label="identity")
+    ax.set_xlabel("Consensus score (input)", fontsize=11)
+    ax.set_ylabel("Transformed score (output)", fontsize=11)
+    ax.set_title("Tanh IQR-restoring transformation", fontsize=12)
+    ax.legend(fontsize=9, loc="upper left")
+    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    formula = r"$f(x) = 0.5 + \frac{0.5 \cdot \tanh(k(x-0.5))}{\tanh(k/2)}$"
+    ax.text(0.97, 0.05, formula, transform=ax.transAxes, ha="right", va="bottom",
+            fontsize=10, bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.8))
+    ax.grid(True, alpha=0.3)
+
+    # Right: M → k fitted curve + real empirical points
+    ax2 = axes[1]
+    M_cont = np.linspace(2, 100, 500)
+    ax2.plot(M_cont, [_k_from_n_models(m) for m in M_cont], "steelblue", lw=2.5)
+    for pname, (M, k_real) in empirical.items():
+        ax2.scatter(M, k_real, color="black", s=45, zorder=5)
+        ax2.annotate(pname, (M, k_real), textcoords="offset points",
+                     xytext=(5, 3), fontsize=7.5, color="black")
+    ax2.set_xlabel("Number of models M", fontsize=11)
+    ax2.set_ylabel("k (tanh steepness)", fontsize=11)
+    ax2.set_title("M → k mapping", fontsize=12)
+    formula2 = r"$k(M) = 2\left(1 + 1.156\left(1-e^{-M/6.47}\right)\right)$"
+    ax2.text(0.97, 0.07, formula2, transform=ax2.transAxes, ha="right", va="bottom",
+             fontsize=10, bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.8))
+    ax2.grid(True, alpha=0.3)
+    ax2.set_xlim(2, 100)
+
+    plt.tight_layout()
+    out_path = os.path.join(out_dir, "transform_scenarios.png")
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"  [plot] transform_scenarios -> {out_path}")
 
 
 def main() -> None:
@@ -190,6 +257,9 @@ def main() -> None:
     for pathogen in pathogens:
         out_path = args.output or os.path.join(args.output_dir, f"{pathogen}.csv")
         run(pathogen, args.input_dir, reports_df, out_path)
+
+    if not args.pathogen:
+        plot_transform_scenarios(reports_df, args.input_dir, args.output_dir)
 
 
 if __name__ == "__main__":
