@@ -14,7 +14,7 @@ Outputs per pathogen in output/17_quality_checks/{pathogen}/:
                              + n_decoy | label_conflict | decoy_inactive_dup | intra_dataset_conflicts
   data_summary.csv         — one row per dataset: counts + per-dataset label/DrugBank flags
                              name | source | label | n_compounds | n_positives | n_decoys | final_ratio
-                             | n_label_conflicts | n_drugbank_overlap
+                             | active_label_conflict | inactive_label_conflict | n_drugbank_overlap
   model_summary.csv        — one row per model (kept + discarded)
                              name | model_name | n_compounds | n_positives | auroc_mean | auroc_std
                              | final_weight | fold_unstable | low_weight | discarded
@@ -206,6 +206,7 @@ def build_data_summary(
     dataset_names: list[str],
     meta_df: pd.DataFrame,
     df_wd: pd.DataFrame,
+    records: dict,
     reports_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """One row per dataset: basic stats plus per-dataset label conflict and DrugBank counts."""
@@ -222,17 +223,34 @@ def build_data_summary(
             continue
         m = meta_p.loc[name]
         in_ds = _in_dataset(df_wd["found_in"], name)
+
+        n_active_conflict = 0
+        n_inactive_conflict = 0
+        for rec in records.values():
+            ds = rec["datasets"]
+            if name not in ds:
+                continue
+            this = ds[name]
+            others = [v for k, v in ds.items() if k != name]
+            other_active   = sum(v["n_active"]             for v in others)
+            other_inactive = sum(v["n_inactive"] + v["n_decoy"] for v in others)
+            if this["n_active"] > 0 and other_inactive > 0:
+                n_active_conflict += 1
+            if this["n_inactive"] > 0 and other_active > 0:
+                n_inactive_conflict += 1
+
         rows.append({
-            "name":               name,
-            "future_model_name":  name_to_model.get(name, ""),
-            "source":             m.get("source", ""),
-            "label":              m.get("label", ""),
-            "n_compounds":        int(m.get("final_compounds", m.get("compounds", 0))),
-            "n_positives":        int(m.get("positives", 0)),
-            "n_decoys":           int(m.get("decoys", 0)),
-            "final_ratio":        round(float(m.get("final_ratio", 0.0)), 4),
-            "n_label_conflicts":  int(df_wd.loc[in_ds, "label_conflict"].sum()),
-            "n_drugbank_overlap": int(df_wd.loc[in_ds, "in_drugbank"].sum()),
+            "name":                    name,
+            "future_model_name":       name_to_model.get(name, ""),
+            "source":                  m.get("source", ""),
+            "label":                   m.get("label", ""),
+            "n_compounds":             int(m.get("final_compounds", m.get("compounds", 0))),
+            "n_positives":             int(m.get("positives", 0)),
+            "n_decoys":                int(m.get("decoys", 0)),
+            "final_ratio":             round(float(m.get("final_ratio", 0.0)), 4),
+            "active_label_conflict":   n_active_conflict,
+            "inactive_label_conflict": n_inactive_conflict,
+            "n_drugbank_overlap":      int(df_wd.loc[in_ds, "in_drugbank"].sum()),
         })
     return pd.DataFrame(rows)
 
@@ -288,7 +306,7 @@ def run(
     df_wd = build_df(records, include_decoys=True, drugbank_keys=drugbank_keys)
     df_wd.to_csv(os.path.join(out_path, "all_smiles_decoys.csv"), index=False)
 
-    ds_df = build_data_summary(pathogen, dataset_names, meta_df, df_wd, reports_df)
+    ds_df = build_data_summary(pathogen, dataset_names, meta_df, df_wd, records, reports_df)
     ds_df.to_csv(os.path.join(out_path, "data_summary.csv"), index=False)
 
     ms_df = build_model_summary(pathogen, reports_df, discarded_df)
