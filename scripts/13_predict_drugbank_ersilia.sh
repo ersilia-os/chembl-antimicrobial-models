@@ -26,7 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 path_to_csv="$REPO_ROOT/data/processed/11_drugbank_smiles.csv"
-path_to_output="$REPO_ROOT/output/results/13_drugbank_ersilia/${model}.csv"
+path_to_output="$REPO_ROOT/output/13_drugbank_ersilia/${model}.csv"
 
 mkdir -p "$(dirname "$path_to_output")"
 

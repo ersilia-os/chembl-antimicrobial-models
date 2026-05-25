@@ -14,13 +14,13 @@ Filters applied before saving (each dropped with a warning):
 
 Usage:
     python scripts/11_download_drugbank.py
-    python scripts/11_download_drugbank.py --output path/to/file.csv
     python scripts/11_download_drugbank.py --keep_all_columns
 """
 
 import argparse
 import io
 import os
+import sys
 import urllib.request
 
 import pandas as pd
@@ -30,15 +30,16 @@ from tqdm import tqdm
 
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
+sys.path.append(os.path.join(ROOT, "..", "src"))
+
+from default import MW_CAP
 
 URL = (
     "https://raw.githubusercontent.com/ersilia-os/sars-cov-2-chemspace"
     "/main/data/drugbank_smiles.csv"
 )
 DEFAULT_OUT = os.path.join(REPO_ROOT, "data", "processed", "11_drugbank_smiles.csv")
-
-
-MW_CAP = 1000.0
+os.makedirs(os.path.dirname(DEFAULT_OUT), exist_ok=True)
 
 
 def _filter_compounds(df: pd.DataFrame, smiles_col: str) -> pd.DataFrame:
@@ -72,7 +73,6 @@ def _filter_compounds(df: pd.DataFrame, smiles_col: str) -> pd.DataFrame:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download DrugBank SMILES.")
-    parser.add_argument("--output", default=DEFAULT_OUT, help="Output CSV path")
     parser.add_argument("--keep_all_columns", action="store_true",
                         help="Retain all original columns instead of writing only 'smiles'")
     args = parser.parse_args()
@@ -92,9 +92,8 @@ def main() -> None:
             print(f"  Duplicates      : {n_dupes}")
         df = pd.DataFrame({"smiles": unique_smiles})
 
-    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
-    df.to_csv(args.output, index=False)
-    print(f"Saved {len(df)} rows → {args.output}")
+    df.to_csv(DEFAULT_OUT, index=False)
+    print(f"Saved {len(df)} rows → {DEFAULT_OUT}")
 
 
 if __name__ == "__main__":

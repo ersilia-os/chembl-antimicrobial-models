@@ -1,24 +1,12 @@
 """
-Step 12 — Predict DrugBank ranks for trained models.
+Step 12 (local) — Predict DrugBank ranks for trained models, using the lazyqsar
+default installation weights instead of the project's output/08_weights directory.
 
-Uses the lazy-qsar multi-model predict() API so descriptors are computed
-once per featurizer type and shared across all models, rather than
-recomputing them for each model independently.
-
---pathogen:      predict for one pathogen; output is one CSV per pathogen.
---all_pathogens: build descriptors once and score ALL models across ALL
-                 pathogens in a single pass, then split into one CSV per
-                 pathogen (same format as --pathogen). The combined
-                 intermediate file is removed after splitting.
-
-Both modes write to output/12_drugbank/{pathogen}.csv with columns:
-    smiles, model_name_1, model_name_2, ...
-
-Model order follows output/10_fixed_weights/10_reports.csv.
+Identical to 12_predict_drugbank.py except the HOME override is omitted.
 
 Usage:
-    python scripts/12_predict_drugbank.py --pathogen ecoli
-    python scripts/12_predict_drugbank.py --all_pathogens
+    python scripts/12_predict_drugbank_local.py --pathogen ecoli
+    python scripts/12_predict_drugbank_local.py --all_pathogens
 """
 
 import argparse
@@ -32,9 +20,6 @@ from lazyqsar.api.classifier_predict import predict as lqsar_predict
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
-# Point lazyqsar to the project weights directory (mirrors what 09_run_models.sh does via $HOME).
-os.environ["HOME"] = os.path.join(REPO_ROOT, "output", "08_weights")
-
 DRUGBANK_PATH = os.path.join(REPO_ROOT, "data", "processed", "11_drugbank_smiles.csv")
 MODELS_DIR    = os.path.join(REPO_ROOT, "output", "09_models")
 OUT_DIR       = os.path.join(REPO_ROOT, "output", "12_drugbank")
@@ -43,7 +28,7 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 
 def _ordered_model_names(pathogen: str, models_dir: str) -> list[str]:
-    """Return model names for a pathogen in 09_reports/10_reports.csv order, keeping only those on disk."""
+    """Return model names for a pathogen in 10_reports.csv order, keeping only those on disk."""
     reports = pd.read_csv(REPORTS_PATH)
     rows = reports[reports["pathogen"] == pathogen]
     pathogen_dir = os.path.join(models_dir, pathogen)
@@ -54,12 +39,12 @@ def _ordered_model_names(pathogen: str, models_dir: str) -> list[str]:
 
 
 def _ordered_pathogens() -> list[str]:
-    """Return pathogens in the order they first appear in 09_reports/10_reports.csv."""
+    """Return pathogens in the order they first appear in 10_reports.csv."""
     reports = pd.read_csv(REPORTS_PATH)
     return list(dict.fromkeys(reports["pathogen"].tolist()))
 
 
-def run_all_pathogens(drugbank_csv: str, models_dir: str, out_dir: str) -> None:
+def run_all_pathogens(drugbank_csv: str, models_dir: str, out_dir: str) -> int:
     pathogens = _ordered_pathogens()
     model_dir_dict = {}
     for pathogen in pathogens:
@@ -143,7 +128,7 @@ def run_pathogen(pathogen: str, drugbank_csv: str, models_dir: str, out_path: st
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Predict DrugBank ranks for a pathogen.")
+    parser = argparse.ArgumentParser(description="Predict DrugBank ranks (local lazyqsar weights).")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--pathogen",      help="Pathogen code (e.g. ecoli)")
     group.add_argument("--all_pathogens", action="store_true",

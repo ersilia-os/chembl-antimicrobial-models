@@ -17,7 +17,7 @@ from urllib.request import urlretrieve
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
-DEFAULT_PATH = os.path.join(REPO_ROOT, "output", "results", "08_weights")
+DEFAULT_PATH = os.path.join(REPO_ROOT, "output", "08_weights")
 
 WEIGHTS = {
     "chemeleon_mp.pt":         "https://zenodo.org/records/15460715/files/chemeleon_mp.pt",
@@ -78,7 +78,7 @@ def main() -> None:
     print("All weights ready.")
 
     script_path = os.path.join(ROOT, "09_run_models.sh")
-    metadata_path = os.path.join(REPO_ROOT, "output", "results", "07_datasets_metadata.csv")
+    metadata_path = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
 
     if not os.path.exists(metadata_path):
         print(f"\nMetadata not found at {metadata_path} — run step 07 first.")

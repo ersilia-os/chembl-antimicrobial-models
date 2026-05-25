@@ -6,11 +6,11 @@ step 14) recapitulates that model's individual rankings — both when the model
 is excluded from the consensus and when it is included.
 
 Inputs:
-  output/results/12_drugbank/{pathogen}.csv         — prob_ranks per model
-  output/results/14_consensus/{pathogen}.csv        — weighted consensus
-  output/results/14_consensus/{pathogen}_unweighted.csv
+  output/12_drugbank/{pathogen}.csv         — prob_ranks per model
+  output/14_consensus/{pathogen}.csv        — weighted consensus
+  output/14_consensus/{pathogen}_unweighted.csv
 
-Outputs per pathogen in output/results/16_recapitulate_consensus/:
+Outputs per pathogen in output/16_recapitulate_consensus/:
   {pathogen}_exc_weighted.csv    — model vs leave-one-out weighted consensus
   {pathogen}_exc_unweighted.csv  — model vs leave-one-out unweighted consensus
   {pathogen}_weighted.csv        — model vs full weighted consensus
@@ -37,10 +37,10 @@ from sklearn.metrics import roc_auc_score
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
-DEFAULT_IN_DIR_12 = os.path.join(REPO_ROOT, "output", "results", "12_drugbank")
-DEFAULT_IN_DIR_14 = os.path.join(REPO_ROOT, "output", "results", "14_consensus")
-DEFAULT_OUT_DIR   = os.path.join(REPO_ROOT, "output", "results", "16_recapitulate_consensus")
-REPORTS_PATH      = os.path.join(REPO_ROOT, "output", "results", "10_reports.csv")
+DEFAULT_IN_DIR_12 = os.path.join(REPO_ROOT, "output", "12_drugbank")
+DEFAULT_IN_DIR_14 = os.path.join(REPO_ROOT, "output", "14_consensus")
+DEFAULT_OUT_DIR   = os.path.join(REPO_ROOT, "output", "16_recapitulate_consensus")
+REPORTS_PATH      = os.path.join(REPO_ROOT, "output", "10_fixed_weights", "10_reports.csv")
 
 THRESHOLDS     = [0.001, 0.01, 0.05]
 THRESHOLD_SFXS = ["0.1pct", "1pct", "5pct"]
