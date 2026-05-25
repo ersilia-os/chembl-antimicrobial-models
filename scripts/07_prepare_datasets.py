@@ -20,9 +20,11 @@ Step 07 — Prepare datasets for model training.
     output/07_datasets/{pathogen}/{name}.csv with columns smiles, bin.
     Raises ValueError if any bin value outside {0, 1} is found.
 (6) For datasets with ratio > 0.5, augments with decoy compounds to bring
-    the active ratio down to ~0.1. Augmented datasets gain a 'decoy' column
-    (False for original rows, True for added decoys). Datasets below the
-    threshold are not modified and will not contain a 'decoy' column.
+    the active ratio down to ~0.1. Before sampling, decoy candidates that appear
+    as actives (bin=1) in any dataset of the same pathogen are excluded from the
+    pool. Augmented datasets gain a 'decoy' column (False for original rows, True
+    for added decoys). Datasets below the threshold are not modified and will not
+    contain a 'decoy' column.
 (7) Saves output/07_datasets/07_datasets_metadata.csv — the normalised combined
     metadata (all rows, including keep=False) with additional columns: 'decoys'
     (number of decoy rows added, 0 for non-augmented datasets), 'final_ratio'
@@ -240,6 +242,21 @@ def augment_datasets(
     meta["decoys"] = 0
     meta["final_ratio"] = meta["ratio"]
 
+    # Build per-pathogen set of all active SMILES across all extracted datasets,
+    # so decoys that are known actives in any assay of the same pathogen are excluded.
+    print("Building per-pathogen active SMILES sets for decoy filtering...")
+    pathogen_actives: dict[str, set[str]] = {}
+    for pathogen, group in meta[meta["keep"]].groupby("pathogen"):
+        active_set: set[str] = set()
+        for name in group["name"]:
+            fpath = os.path.join(OUT_DIR, pathogen, f"{name}.csv")
+            if os.path.exists(fpath):
+                df_tmp = pd.read_csv(fpath, usecols=["smiles", "bin"])
+                active_set.update(df_tmp.loc[df_tmp["bin"] == 1, "smiles"])
+        pathogen_actives[pathogen] = active_set
+    total_actives = sum(len(s) for s in pathogen_actives.values())
+    print(f"  {total_actives:,} unique active SMILES across {len(pathogen_actives)} pathogens")
+
     high_mask = (meta["ratio"] > HIGH_RATIO_THRESHOLD) & meta["keep"]
     print(f"Augmenting {high_mask.sum()} datasets with ratio > {HIGH_RATIO_THRESHOLD}")
 
@@ -252,12 +269,14 @@ def augment_datasets(
         n_total = len(df)
         n_needed = 10 * n_pos - n_total
 
+        pathogen_active_smiles = pathogen_actives.get(row["pathogen"], set())
         pool = list({
             decoy_smi
             for raw_smi in df.loc[df["bin"] == 1, "smiles"]
             for canon_smi in [raw_to_canonical.get(raw_smi, raw_smi)]
             if canon_smi in decoys
             for decoy_smi in decoys[canon_smi]
+            if decoy_smi not in pathogen_active_smiles
         })
 
         if not pool:

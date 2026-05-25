@@ -31,7 +31,10 @@ def compute_model_name(meta: pd.DataFrame, task_id: int) -> str:
             return "pubchem"
         activity_type = r.get("activity_type")
         if pd.isna(activity_type):
-            return _AGGREGATE_NAME_MAP.get(r["name"], r["name"].lower())
+            base = _AGGREGATE_NAME_MAP.get(r["name"], r["name"].lower())
+            if int(r.get("decoys", 0) or 0) > 0:
+                return f"{base}_decoys"
+            return base
         parts = [_LABEL_MAP[r["label"]], activity_type.lower()]
         if int(r["decoys"]) > 0:
             parts.append("decoys")

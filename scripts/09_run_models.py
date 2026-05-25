@@ -17,6 +17,7 @@ Usage:
     # task_id: 0-based index into 07_datasets/07_datasets_metadata.csv
 """
 
+import json
 import os
 import sys
 
@@ -61,6 +62,7 @@ def run(task_id: int) -> None:
 
     # 5-fold CV
     records = []
+    fold_data = {}
     kf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
     for fold, (train_idx, test_idx) in enumerate(kf.split(smiles, y)):
         smiles_train = [smiles[i] for i in train_idx]
@@ -93,6 +95,13 @@ def run(task_id: int) -> None:
         def fmt(arr, mask):
             return ";".join(str(round(float(v), 3)) for v in arr[mask])
 
+        fold_data[str(fold)] = {
+            "y_true":  y_test,
+            "y_hat":   scores_proba.tolist(),
+            "y_rank":  scores_rank.tolist(),
+            "roc_auc": round(auroc, 4),
+        }
+
         records.append({
             "pathogen":               pathogen,
             "name":                   name,
@@ -119,10 +128,15 @@ def run(task_id: int) -> None:
 
         
 
-    report_path = os.path.join(REPORTS_DIR, pathogen, f"{model_name}.csv")
-    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    report_dir = os.path.join(REPORTS_DIR, pathogen)
+    os.makedirs(report_dir, exist_ok=True)
+    report_path = os.path.join(report_dir, f"{model_name}.csv")
     pd.DataFrame(records).to_csv(report_path, index=False)
     print(f"  Report saved: {report_path}")
+    folds_path = os.path.join(report_dir, f"{model_name}_folds.json")
+    with open(folds_path, "w") as f:
+        json.dump(fold_data, f)
+    print(f"  Folds saved:  {folds_path}")
 
     # Full fit
     model = LazyClassifierQSAR(mode=MODE)
