@@ -110,15 +110,16 @@ def flag_chembl_duplicates(metadata: pd.DataFrame) -> pd.DataFrame:
     if not chembl_to_pubchem:
         return metadata
 
-    pattern = "|".join(chembl_to_pubchem)
-    chembl_names = metadata.loc[metadata["source"] == "chembl", "name"]
-    flagged = chembl_names[chembl_names.str.contains(pattern, regex=True)].index
-    metadata.loc[flagged, "keep"] = False
+    chembl_rows = metadata[metadata["source"] == "chembl"]
+    leading_ids = chembl_rows["name"].str.extract(r"^(CHEMBL\d+)", expand=False)
+    flagged_indices = chembl_rows.index[leading_ids.isin(chembl_to_pubchem)]
+    metadata.loc[flagged_indices, "keep"] = False
 
-    print(f"Flagged {len(flagged)} ChEMBL dataset(s) as keep=False (superseded by PubChem assays):")
-    for _, crow in metadata.loc[flagged].iterrows():
-        prow = next((chembl_to_pubchem[cid] for cid in chembl_to_pubchem if cid in crow["name"]), None)
-        pubchem_info = f"AID {int(prow['name'])} ({int(prow['compounds'])} cpds, {int(prow['positives'])} actives)" if prow is not None else "?"
+    print(f"Flagged {len(flagged_indices)} ChEMBL dataset(s) as keep=False (superseded by PubChem assays):")
+    for idx in flagged_indices:
+        crow = metadata.loc[idx]
+        prow = chembl_to_pubchem[leading_ids.loc[idx]]
+        pubchem_info = f"AID {int(prow['name'])} ({int(prow['compounds'])} cpds, {int(prow['positives'])} actives)"
         print(f"  [{crow['pathogen']}] {crow['name']} ({int(crow['compounds'])} cpds, {int(crow['positives'])} actives)  →  PubChem {pubchem_info}")
     return metadata
 
