@@ -1,25 +1,27 @@
 """
 Step 06 — Aggregate eos3e6s decoy results and optionally clean up intermediates.
 
-Streams all per-split CSVs from output/results/05_decoys/ into a single
-output/results/06_eos3e6s_v1.csv without loading everything into memory.
+Streams all per-split CSVs from output/05_decoys/ into a single
+output/06_decoys/06_eos3e6s_v1.csv without loading everything into memory.
+
+Also handles the local-run case where 05_run_decoys_ersilia.sh produced a single
+eos3e6s_all.csv instead of per-split files.
 
 With --cleanup, removes directories that are redundant after aggregation.
-The expected split count is read from output/results/03_selected_positives.csv.
-Cleanup is skipped with a warning if fewer files than expected were aggregated.
+For HPC runs, cleanup is skipped with a warning if fewer files than expected were aggregated
+(expected count is read from output/03_select_positives/03_selected_positives.csv).
 
 Removed with --cleanup:
-  - output/results/04_positives_splits/   (step-04 inputs, regenerable)
-  - output/results/05_decoys/             (raw per-split outputs, now aggregated)
-  - output/results/05_logs/              (SLURM job logs)
+  - output/04_positives_splits/   (step-04 inputs, regenerable)
+  - output/05_decoys/             (raw per-split outputs, now aggregated)
+  - output/05_logs/              (SLURM job logs)
 
 Kept even with --cleanup (expensive to recreate):
-  - output/results/04_eos3e6s_v1.sif     (Apptainer SIF image)
+  - output/04_decoys_sif_image/   (Apptainer SIF image)
 
 Usage:
     python scripts/06_aggregate_decoys.py
     python scripts/06_aggregate_decoys.py --cleanup
-    python scripts/06_aggregate_decoys.py --decoys_dir path/to/dir --output path/to/out.csv
 """
 
 import argparse
@@ -34,21 +36,30 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 MODEL = "eos3e6s"
 
-POSITIVES_PATH = os.path.join(REPO_ROOT, "output", "results", "03_selected_positives.csv")
+POSITIVES_PATH = os.path.join(REPO_ROOT, "output", "03_select_positives", "03_selected_positives.csv")
+DECOYS_DIR = os.path.join(REPO_ROOT, "output", "05_decoys")
+OUTPUT_PATH = os.path.join(REPO_ROOT, "output", "06_decoys", f"06_{MODEL}_v1.csv")
 CLEANUP_DIRS = [
-    os.path.join(REPO_ROOT, "output", "results", "04_positives_splits"),
-    os.path.join(REPO_ROOT, "output", "results", "05_decoys"),
-    os.path.join(REPO_ROOT, "output", "results", "05_logs"),
+    os.path.join(REPO_ROOT, "output", "04_positives_splits"),
+    os.path.join(REPO_ROOT, "output", "05_decoys"),
+    os.path.join(REPO_ROOT, "output", "05_logs"),
 ]
 
 
-def aggregate(decoys_dir: str, output_path: str) -> int:
+def aggregate(decoys_dir: str, output_path: str) -> tuple[int, bool]:
+    local_file = os.path.join(decoys_dir, f"{MODEL}_all.csv")
+    if os.path.isfile(local_file):
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        shutil.copy2(local_file, output_path)
+        print(f"Copied local run result → {output_path}")
+        return 1, True
+
     pattern = os.path.join(decoys_dir, f"{MODEL}_*.csv")
     split_files = sorted(glob.glob(pattern))
 
     if not split_files:
         print(f"No files matching {pattern}")
-        return 0
+        return 0, False
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
@@ -64,7 +75,7 @@ def aggregate(decoys_dir: str, output_path: str) -> int:
                     n_rows += 1
 
     print(f"Aggregated {len(split_files)} splits ({n_rows:,} rows) → {output_path}")
-    return len(split_files)
+    return len(split_files), False
 
 
 def resolve_expected() -> int | None:
@@ -82,10 +93,18 @@ def cleanup() -> None:
             print(f"Already absent: {path}")
 
 
-def main(decoys_dir: str, output_path: str, do_cleanup: bool) -> None:
-    n_found = aggregate(decoys_dir, output_path)
-    n_expected = resolve_expected()
+def main(do_cleanup: bool) -> None:
+    n_found, local_run = aggregate(DECOYS_DIR, OUTPUT_PATH)
+    if n_found == 0:
+        return
 
+    if local_run:
+        if do_cleanup:
+            cleanup()
+            print("All clean!")
+        return
+
+    n_expected = resolve_expected()
     if n_expected is None:
         print("[WARN] Could not read expected split count from 03_selected_positives.csv.")
         return
@@ -104,19 +123,9 @@ if __name__ == "__main__":
         description="Aggregate eos3e6s per-split outputs into a single csv."
     )
     parser.add_argument(
-        "--decoys_dir",
-        default=os.path.join(REPO_ROOT, "output", "results", "05_decoys"),
-        help="Directory containing per-split CSVs (default: output/results/05_decoys).",
-    )
-    parser.add_argument(
-        "--output",
-        default=os.path.join(REPO_ROOT, "output", "results", f"06_{MODEL}_v1.csv"),
-        help=f"Output path (default: output/results/06_{MODEL}_v1.csv).",
-    )
-    parser.add_argument(
         "--cleanup",
         action="store_true",
         help="Remove intermediate directories no longer needed after aggregation.",
     )
     args = parser.parse_args()
-    main(args.decoys_dir, args.output, args.cleanup)
+    main(do_cleanup=args.cleanup)
