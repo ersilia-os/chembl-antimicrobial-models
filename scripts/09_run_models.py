@@ -2,25 +2,24 @@
 Step 09 — Train LazyQSAR models for each dataset.
 
 Intended to run as a SLURM array job via 09_run_models.sh, with one task
-per row in 07_datasets_metadata.csv.
+per row in 07_datasets/07_datasets_metadata.csv.
 
 For each dataset (identified by SLURM_ARRAY_TASK_ID):
-  1. Loads the prepared CSV from output/results/07_datasets/{pathogen}/{name}.csv
+  1. Loads the prepared CSV from output/07_datasets/{pathogen}/{name}.csv
   2. Runs 5-fold stratified cross-validation and records per-fold metrics
      (AUROC, AUPRC, BEDROC and their baselines, OOF AUCs, raw score arrays)
-     in output/results/09_reports/{pathogen}/{name}.csv
+     in output/09_reports/{pathogen}/{name}.csv
   3. Trains a final model on all data and saves it to
-     output/results/09_models/{pathogen}/{model_name}/
+     output/09_models/{pathogen}/{model_name}/
 
 Usage:
     python scripts/09_run_models.py <task_id>
-    # task_id: 0-based index into 07_datasets_metadata.csv
+    # task_id: 0-based index into 07_datasets/07_datasets_metadata.csv
 """
 
+import json
 import os
-import string
 import sys
-from collections import Counter
 
 import numpy as np
 import pandas as pd
@@ -31,11 +30,14 @@ from sklearn.model_selection import StratifiedKFold
 
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
+sys.path.append(os.path.join(ROOT, "..", "src"))
 
-METADATA_PATH = os.path.join(REPO_ROOT, "output", "results", "07_datasets_metadata.csv")
-DATASETS_DIR  = os.path.join(REPO_ROOT, "output", "results", "07_datasets")
-REPORTS_DIR   = os.path.join(REPO_ROOT, "output", "results", "09_reports")
-MODELS_DIR    = os.path.join(REPO_ROOT, "output", "results", "09_models")
+from model_name import compute_model_name
+
+METADATA_PATH = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
+DATASETS_DIR  = os.path.join(REPO_ROOT, "output", "07_datasets")
+REPORTS_DIR   = os.path.join(REPO_ROOT, "output", "09_reports")
+MODELS_DIR    = os.path.join(REPO_ROOT, "output", "09_models")
 
 N_FOLDS = 5
 MODE    = "slow"
@@ -45,54 +47,11 @@ DESCRIPTOR_TYPES = {
     "fast": ["morgan"],
 }
 
-_LABEL_MAP = {"A": "individual", "B": "individual", "M": "merged", "G": "general"}
-
-
-def _idx_to_suffix(n: int) -> str:
-    """Convert 0-based index to Excel-column-style suffix: 0→a, 25→z, 26→aa, …"""
-    result = ""
-    n += 1
-    while n > 0:
-        n, remainder = divmod(n - 1, 26)
-        result = string.ascii_lowercase[remainder] + result
-    return result
-
-
-def _compute_model_name(meta: pd.DataFrame, task_id: int) -> str:
-    row = meta.iloc[task_id]
-    pathogen = row["pathogen"]
-    pathogen_meta = meta[meta["pathogen"] == pathogen].reset_index()
-
-    def _base(r: pd.Series) -> str:
-        if r.get("source") == "pubchem":
-            return "pubchem"
-        parts = [_LABEL_MAP[r["label"]], r["activity_type"].lower()]
-        if int(r["decoys"]) > 0:
-            parts.append("decoys")
-        return "_".join(parts)
-
-    base_names = [_base(r) for _, r in pathogen_meta.iterrows()]
-
-    counts = Counter(base_names)
-    seen: dict[str, int] = {}
-    final_names = []
-    for bn in base_names:
-        if counts[bn] > 1:
-            idx = seen.get(bn, 0)
-            final_names.append(f"{bn}_{_idx_to_suffix(idx)}")
-            seen[bn] = idx + 1
-        else:
-            final_names.append(bn)
-
-    pos = pathogen_meta.index[pathogen_meta["name"] == row["name"]][0]
-    return final_names[pos]
-
-
 def run(task_id: int) -> None:
     meta = pd.read_csv(METADATA_PATH)
     row  = meta.iloc[task_id]
     pathogen, name = row["pathogen"], row["name"]
-    model_name = _compute_model_name(meta, task_id)
+    model_name = compute_model_name(meta, task_id)
 
     print(f"[{task_id}] {pathogen}/{name} ({model_name})")
 
@@ -103,6 +62,7 @@ def run(task_id: int) -> None:
 
     # 5-fold CV
     records = []
+    fold_data = {}
     kf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
     for fold, (train_idx, test_idx) in enumerate(kf.split(smiles, y)):
         smiles_train = [smiles[i] for i in train_idx]
@@ -135,6 +95,13 @@ def run(task_id: int) -> None:
         def fmt(arr, mask):
             return ";".join(str(round(float(v), 3)) for v in arr[mask])
 
+        fold_data[str(fold)] = {
+            "y_true":  y_test,
+            "y_hat":   scores_proba.tolist(),
+            "y_rank":  scores_rank.tolist(),
+            "roc_auc": round(auroc, 4),
+        }
+
         records.append({
             "pathogen":               pathogen,
             "name":                   name,
@@ -161,10 +128,15 @@ def run(task_id: int) -> None:
 
         
 
-    report_path = os.path.join(REPORTS_DIR, pathogen, f"{name}.csv")
-    os.makedirs(os.path.dirname(report_path), exist_ok=True)
+    report_dir = os.path.join(REPORTS_DIR, pathogen)
+    os.makedirs(report_dir, exist_ok=True)
+    report_path = os.path.join(report_dir, f"{model_name}.csv")
     pd.DataFrame(records).to_csv(report_path, index=False)
     print(f"  Report saved: {report_path}")
+    folds_path = os.path.join(report_dir, f"{model_name}_folds.json")
+    with open(folds_path, "w") as f:
+        json.dump(fold_data, f)
+    print(f"  Folds saved:  {folds_path}")
 
     # Full fit
     model = LazyClassifierQSAR(mode=MODE)

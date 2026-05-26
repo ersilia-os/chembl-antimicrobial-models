@@ -11,8 +11,8 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
-#SBATCH --output=output/results/09_logs/%x_%a.out
-#SBATCH --error=output/results/09_logs/_%x_%a.err
+#SBATCH --output=output/09_logs/%x_%a.out
+#SBATCH --error=output/09_logs/_%x_%a.err
 #SBATCH --partition=spot_cpu
 #SBATCH --nodelist=irbccn16,irbccn41,irbccn42
 #SBATCH --requeue
@@ -23,6 +23,6 @@ export LD_LIBRARY_PATH=/apps/manual/software/CUDA/11.6.1/lib64:/apps/manual/soft
 export PYTHONDONTWRITEBYTECODE=1
 export PYTHONNOUSERSITE=1
 export PYTHONUNBUFFERED=1
-export HOME="$(pwd)/output/results/08_weights"
+export HOME="$(pwd)/output/08_weights"
 
 envs/camm/bin/python -u scripts/09_run_models.py "$SLURM_ARRAY_TASK_ID"
