@@ -13,7 +13,7 @@ Zip file mapping:
                        file inside: {name}.csv  (columns: smiles, bin)
   Label G         ->  data/raw/chembl/<pathogen>/20_general_no_pubchem_datasets_middle.zip
                        (preferred) or 20_general_datasets_middle.zip
-                       file inside: ORG_{activity_type}_{unit}_{cutoff}.csv.gz
+                       file inside: ORG_{activity_type}_{cutoff}.csv.gz
                                     (columns: compound_chembl_id, bin, smiles)
   Label G (aggregate) -> data/raw/chembl/<pathogen>/G_ORG_DR.csv or G_ORG_SP.csv
                        (columns: smiles, bin)
@@ -60,7 +60,9 @@ sys.path.append(os.path.join(ROOT, "..", "src"))
 from default import (
     CHEMBL_ZIP_FINAL,
     CHEMBL_ZIP_GENERAL,
+    CHEMBL_ZIP_GENERAL_HIGH,
     CHEMBL_ZIP_GENERAL_NO_PUBCHEM,
+    CHEMBL_ZIP_GENERAL_NO_PUBCHEM_HIGH,
     COL_BIN,
     COL_CANONICAL_SMILES,
     COL_FOUND_IN,
@@ -96,9 +98,13 @@ def read_chembl_dataset(row: pd.Series) -> pd.Series | None:
 
     elif label == "G":
         base_dir = os.path.join(REPO_ROOT, "data", "raw", "chembl", pathogen)
-        no_pubchem = os.path.join(base_dir, CHEMBL_ZIP_GENERAL_NO_PUBCHEM)
-        zip_path = no_pubchem if os.path.exists(no_pubchem) else os.path.join(base_dir, CHEMBL_ZIP_GENERAL)
-        inner_name = f"ORG_{row['activity_type']}_{row['unit']}_{row['cutoff']}.csv.gz"
+        if pathogen == "pfalciparum":
+            no_pubchem = os.path.join(base_dir, CHEMBL_ZIP_GENERAL_NO_PUBCHEM_HIGH)
+            zip_path = no_pubchem if os.path.exists(no_pubchem) else os.path.join(base_dir, CHEMBL_ZIP_GENERAL_HIGH)
+        else:
+            no_pubchem = os.path.join(base_dir, CHEMBL_ZIP_GENERAL_NO_PUBCHEM)
+            zip_path = no_pubchem if os.path.exists(no_pubchem) else os.path.join(base_dir, CHEMBL_ZIP_GENERAL)
+        inner_name = f"{row['name']}.csv.gz"
         with zipfile.ZipFile(zip_path) as zf:
             with zf.open(inner_name) as f:
                 df = pd.read_csv(io.BytesIO(f.read()), compression="gzip")
