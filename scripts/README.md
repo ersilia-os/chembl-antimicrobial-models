@@ -10,7 +10,7 @@ Downloads ChEMBL antimicrobial datasets for all 15 pathogens from the sibling `c
 
 For each pathogen, the `no_pubchem` variant of the general assay files is preferred when available — these exclude compounds already covered by PubChem assays. Only datasets at the `middle` activity cutoff are retained to avoid overly permissive or stringent definitions of activity.
 
-In addition to individual general assay datasets, two aggregate datasets are built per pathogen by merging all middle-cutoff assays: `G_ORG_DR` (dose-response types: IC50, MIC, EC50, …) and `G_ORG_SP` (single-point types: INHIBITION, ACTIVITY, GI, …). Deduplication is activity-conservative: if a compound appears active in any constituent assay, it is kept as active. Aggregates with fewer than 50 actives are discarded.
+Individual general datasets are named `ORG_{activity_type}_{cutoff}` (e.g. `ORG_MIC_10.0`), matching the filename stem in the source zip. In addition, two aggregate datasets are built per pathogen by merging all middle-cutoff assays: `G_ORG_DR` (dose-response types: IC50, MIC, EC50, …) and `G_ORG_SP` (single-point types: INHIBITION, ACTIVITY, GI, …). Deduplication is activity-conservative: if a compound appears active in any constituent assay, it is kept as active. Aggregates with fewer than 50 actives are discarded.
 
 **Cutoff:** individual general datasets must also have AUROC ≥ 0.7 and ≥ 50 actives to be included.
 
