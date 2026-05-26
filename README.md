@@ -49,23 +49,29 @@ eosvc download --path output
 
 ## Pipeline overview
 
-| Step | Script | What it does |
-|------|--------|-------------|
-| 01 | `scripts/01_download_datasets_chembl.py` | Downloads binary datasets from `chembl-antimicrobial-tasks` outputs into `data/raw/chembl/` and `data/processed/chembl/`; optionally selects a representative subset with `--select_representatives` |
-| 02 | `scripts/02_download_datasets_pubchem.py` | Downloads the annotated assay summary (`06_summary.csv`) from `pubchem-antimicrobial-tasks` into `data/processed/pubchem/02_pubchem_datasets.csv`; derives an organism-only subset (excluding single-protein and discarded assays, adding `compounds` and `ratio` columns) saved to `data/processed/pubchem/02_pubchem_datasets_organism.csv`; downloads the per-assay compound CSVs for those assays into `data/raw/pubchem/<pathogen_code>/<aid>.csv` |
-| 03 | `scripts/03_select_positives.py` | Extracts all active compounds (bin == 1) across every dataset, deduplicates SMILES, and records provenance and split indices in `output/results/03_selected_positives.csv` |
-| 04 | `scripts/04_setup_decoy_run.py` | Splits positives into batches, builds the `eos3e6s` Apptainer SIF image via `ersilia_apptainer create` (accepts `--version`, default `v1.0.0`), and prints the exact `sbatch` command to submit step 05; requires `envs/camm` from the Setup step |
-| 05 | `scripts/05_run_decoys.sh` | Static SLURM array job script; submit using the command printed by step 04 (`sbatch --chdir=<repo_root> --array=0-N%M scripts/05_run_decoys.sh`); runs `eos3e6s` on each input split via `ersilia_apptainer` |
-| 06 | `scripts/06_aggregate_decoys.py` | Streams all per-split CSVs into `output/results/06_eos3e6s_v1.csv`; `--cleanup` removes intermediate directories (splits, decoys, logs) only if all expected splits are present |
-| 07 | `scripts/07_prepare_datasets.py` | Normalises and merges ChEMBL and PubChem metadata (shared `target_type` column); flags ChEMBL datasets superseded by a PubChem assay (`keep=False`); extracts compound CSVs for `keep=True` datasets into `output/results/07_datasets/{pathogen}/{name}.csv` (columns: `smiles, bin`); raises an error if any bin value outside {0,1} is found; augments datasets with active ratio > 0.5 with decoy compounds targeting ratio 0.1; saves enriched metadata (all rows) sorted by pathogen to `output/results/07_datasets_metadata.csv` |
-| 08 | `scripts/08_download_weights.py` | Downloads LazyQSAR descriptor weights (cddd, chemeleon, clamp) to `output/results/08_weights/.lazyqsar/`; run once from the login node before submitting step 09; accepts `--path` to override the cache location; prints two separate `sbatch` commands — one for small datasets (≤30k compounds, 16 GB) and one for large datasets (>30k compounds, 64 GB) |
-| 09 | `scripts/09_run_models.sh` | Static SLURM array job script; submit using the commands printed by step 08; invokes `09_run_models.py` per task — runs 5-fold CV and trains a final LazyQSAR model, saving reports to `output/results/09_reports/` and models to `output/results/09_models/` |
-| 10 | `scripts/10_aggregate_reports.py` | Iterates over datasets from `07_datasets_metadata.csv`, skips incomplete runs (< 5 folds), and writes one summarised row per dataset to `output/results/10_reports.csv`; reports mean/std AUROC/AUPRC/BEDROC, per-descriptor OOF AUCs, seven model-quality weights (w1–w7), `final_weight`, `final_normalized_weight`, decision cutoff, model sizes, portfolio, and aggregated predict_rank scores |
-| 11 | `scripts/11_download_drugbank.py` | Downloads DrugBank SMILES from [`ersilia-os/sars-cov-2-chemspace`](https://github.com/ersilia-os/sars-cov-2-chemspace); default output `data/processed/10_drugbank_smiles.csv`; `--only_smiles` returns a single deduplicated SMILES column sorted alphabetically; `--output` overrides the destination path |
-| 12 | `scripts/12_predict_drugbank.py` | Loads all trained models for a given pathogen and runs `predict_rank` on every DrugBank compound; model order follows `10_reports.csv`; outputs one CSV per pathogen with one column per model; `--pathogen <code>` for a single pathogen, `--all_pathogens` to iterate all in metadata order |
-| 13 | `scripts/13_consensus_scoring.py` | Reads per-pathogen rank matrices from step 12 (`output/results/12_drugbank/{pathogen}.csv`); looks up each model's `final_normalized_weight` from `10_reports.csv`; computes a weighted mean consensus score; writes `output/results/13_consensus/{pathogen}.csv` (columns: `smiles`, `consensus_score`, sorted descending); `--pathogen <code>` for a single pathogen, `--all_pathogens` to iterate all in metadata order |
+See [scripts/README.md](scripts/README.md) for a description of each step.
 
-Steps 05 and 09 are static SLURM scripts designed to run on an HPC cluster; all other scripts run locally.
+| Step | Script |
+|------|--------|
+| 01 | `scripts/01_download_datasets_chembl.py` |
+| 02 | `scripts/02_download_datasets_pubchem.py` |
+| 03 | `scripts/03_select_positives.py` |
+| 04 | `scripts/04_setup_decoy_run.py` |
+| 05 | `scripts/05_run_decoys.sh` *(HPC)* |
+| 06 | `scripts/06_aggregate_decoys.py` |
+| 07 | `scripts/07_prepare_datasets.py` |
+| 08 | `scripts/08_download_weights.py` *(HPC)* |
+| 09 | `scripts/09_run_models.sh` *(HPC)* |
+| 10 | `scripts/10_aggregate_reports.py` |
+| 11 | `scripts/11_download_drugbank.py` |
+| 12 | `scripts/12_predict_drugbank.py` |
+| 13 | `scripts/13_predict_drugbank_ersilia.sh` |
+| 14 | `scripts/14_consensus_scoring.py` |
+| 15 | `scripts/15_recapitulate_models.py` |
+| 16 | `scripts/16_recapitulate_consensus.py` |
+| 17 | `scripts/17_quality_checks.py` |
+| 18 | `scripts/18_emh_files.py` |
+| 19 | `scripts/19_euopenscreen_benchmark.sh` |
 
 ## Repository structure
 
@@ -78,7 +84,7 @@ chembl-antimicrobial-models/
 │   └── processed/              # Merged dataset metadata per pathogen
 ├── envs/
 │   └── camm/                   # Project conda env (gitignored; created with --prefix)
-├── scripts/                    # Pipeline scripts (01–13)
+├── scripts/                    # Pipeline scripts (01–19)
 ├── notebooks/                  # Exploratory notebooks
 └── output/
     └── results/
@@ -97,32 +103,7 @@ chembl-antimicrobial-models/
         ├── 10_reports.csv                   # One summarised row per dataset: model_name, metrics, weights, decision cutoff, portfolio, predict_rank scores
         ├── 12_drugbank/                     # Per-pathogen DrugBank rank predictions (one CSV per pathogen)
         ├── 13_consensus/                    # Per-pathogen consensus scores (smiles, consensus_score)
-└── data/
-    └── processed/
-        └── 10_drugbank_smiles.csv           # DrugBank SMILES (downloaded by step 11)
 ```
-
-## Weighting strategy
-
-Each trained model receives a `final_weight` score in `10_reports.csv`, computed as the mean of seven independent weights (w1–w7). A higher `final_weight` indicates a model that is more reliable and ready for deployment.
-
-### Model-dependent weights
-
-These weights reflect intrinsic properties of the dataset and how well the model performed during cross-validation.
-
-| Weight | Description |
-|--------|-------------|
-| **w1** | **Dataset type.** Individual pathogen-specific datasets score 1.0; merged (multi-source) datasets score 0.5; general datasets score 0.0. See [`chembl-antimicrobial-tasks`](https://github.com/ersilia-os/chembl-antimicrobial-tasks) for details on dataset types. |
-| **w2** | **Decoy contamination.** 1.0 if no decoy compounds were added to the inactive set; decreases linearly toward 0 as the fraction of decoys among inactives increases. |
-| **w3** | **Cross-validated AUROC.** 0 for mean CV AUROC ≤ 0.7; linear to 1 at AUROC = 1.0. |
-| **w4** | **AUPRC enrichment.** Sum of two equal sub-scores (each 0–0.5): (i) absolute excess of mean AUPRC over the prevalence baseline, scaled from 0 at baseline to 0.5 at AUPRC = 1; (ii) fold enrichment over baseline, scaled from 0 at ≤1× to 0.5 at ≥10×. |
-| **w5** | **BEDROC enrichment.** Same two-component scheme as w4, applied to mean BEDROC versus its expected random-ranking baseline (α = 20). BEDROC captures early enrichment — how well actives are concentrated at the top of the ranked list. |
-| **w6** | **Total compound count.** Piecewise linear: 0 at < 100 compounds, 0.25 at 1k, 0.5 at 10k, 1.0 at ≥ 100k. |
-| **w7** | **Active compound count.** Piecewise linear: 0 at < 50 actives, 0.25 at 250, 0.5 at 1k, 1.0 at ≥ 10k. |
-
-### Sample-dependent weights
-
-*Placeholder — to be defined.*
 
 ## About the Ersilia Open Source Initiative
 
