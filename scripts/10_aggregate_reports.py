@@ -1,8 +1,10 @@
 """
 Step 10 — Aggregate per-dataset CV reports into a single summarised file.
 
-Iterates over datasets from 07_datasets_metadata.csv, validates that all 5
-folds are present, and writes one row per dataset to 10_reports.csv.
+Iterates over datasets from 07_datasets/07_datasets_metadata.csv, validates that all 5
+folds are present, and applies a mean AUROC ≥ 0.7 filter. Writes to output/10_fixed_weights/:
+  - 10_reports.csv       — one row per retained dataset with aggregated metrics and weights
+  - 10_discarded_models.csv — datasets dropped for failing the AUROC threshold
 
 Usage:
     python scripts/10_aggregate_reports.py
@@ -10,20 +12,25 @@ Usage:
 
 import json
 import os
+import sys
 
 import numpy as np
 import pandas as pd
 
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
+sys.path.append(os.path.join(ROOT, "..", "src"))
 
-METADATA_PATH = os.path.join(REPO_ROOT, "output", "results", "07_datasets_metadata.csv")
-REPORTS_DIR   = os.path.join(REPO_ROOT, "output", "results", "09_reports")
-MODELS_DIR    = os.path.join(REPO_ROOT, "output", "results", "09_models")
-OUT_PATH      = os.path.join(REPO_ROOT, "output", "results", "10_reports.csv")
+from default import DESCRIPTORS, MIN_AUROC, N_FOLDS
+from model_name import compute_model_name
 
-N_FOLDS      = 5
-DESCRIPTORS  = ["cddd", "chemeleon", "clamp", "morgan", "rdkit"]
+METADATA_PATH  = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
+REPORTS_DIR    = os.path.join(REPO_ROOT, "output", "09_reports")
+MODELS_DIR     = os.path.join(REPO_ROOT, "output", "09_models")
+OUT_DIR        = os.path.join(REPO_ROOT, "output", "10_fixed_weights")
+OUT_PATH       = os.path.join(OUT_DIR, "10_reports.csv")
+DISCARDED_PATH = os.path.join(OUT_DIR, "10_discarded_models.csv")
+os.makedirs(OUT_DIR, exist_ok=True)
 
 
 def _dir_size_mb(path: str) -> float:
@@ -55,7 +62,7 @@ def _w1(label: str) -> float:
 
 
 def _w2(df: pd.DataFrame, n_decoys: int) -> float:
-    """Decoy contamination: 1 if no decoys, decreasing linearly to 0 as decoys fill inactives."""
+    """Fraction of the inactive class that is genuine: 1.0 if no decoys, decreasing as decoys dominate the negatives."""
     n_inactives = int(df["compounds_test"].sum()) - int(df["positives_test"].sum())
     if n_inactives == 0:
         return 1.0
@@ -109,7 +116,22 @@ def _w7(df: pd.DataFrame) -> float:
     return round(_piecewise_linear(n, _W7_KNOTS), 4)
 
 
-def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow) -> dict:
+def _rank_strings_from_folds(folds_path: str) -> tuple[str, str]:
+    with open(folds_path) as f:
+        folds = json.load(f)
+    actives, inactives = [], []
+    for k in sorted(folds.keys(), key=int):
+        fold = folds[k]
+        a, i = [], []
+        for yt, yr in zip(fold["y_true"], fold["y_rank"]):
+            s = str(round(float(yr), 3))
+            (a if int(yt) == 1 else i).append(s)
+        actives.append(";".join(a))
+        inactives.append(";".join(i))
+    return ";".join(actives), ";".join(inactives)
+
+
+def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow, folds_path: str) -> dict:
     model_name = df["model_name"].iloc[0]
 
     model_dir = os.path.join(MODELS_DIR, pathogen, model_name)
@@ -152,8 +174,7 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow) -> dict:
         row[f"{col}_mean"] = round(vals.mean(), 4) if not vals.empty else np.nan
         row[f"{col}_std"]  = round(vals.std(),  4) if not vals.empty else np.nan
 
-    row["predict_rank_actives"]   = ";".join(df["predict_rank_actives"].tolist())
-    row["predict_rank_inactives"] = ";".join(df["predict_rank_inactives"].tolist())
+    row["predict_rank_actives"], row["predict_rank_inactives"] = _rank_strings_from_folds(folds_path)
 
     return row
 
@@ -161,13 +182,15 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow) -> dict:
 def main() -> None:
     meta_df = pd.read_csv(METADATA_PATH)
     n_total = len(meta_df)
+    model_name_map = {i: compute_model_name(meta_df, i) for i in range(len(meta_df))}
     records = []
+    discarded = []
 
     for i, mrow in enumerate(meta_df.itertuples(), start=1):
         pathogen, name = mrow.pathogen, mrow.name
         prefix = f"[{i}/{n_total}]"
 
-        report_path = os.path.join(REPORTS_DIR, pathogen, f"{name}.csv")
+        report_path = os.path.join(REPORTS_DIR, pathogen, f"{model_name_map[i - 1]}.csv")
         if not os.path.exists(report_path):
             print(f"{prefix} [WARN] {pathogen}/{name}: report not found, skipping")
             continue
@@ -177,8 +200,26 @@ def main() -> None:
             print(f"{prefix} [WARN] {pathogen}/{name}: only {len(df)}/{N_FOLDS} folds complete, skipping")
             continue
 
-        records.append(aggregate(df, pathogen, name, mrow))
+        folds_path = os.path.join(REPORTS_DIR, pathogen, f"{model_name_map[i - 1]}_folds.json")
+        if not os.path.exists(folds_path):
+            print(f"{prefix} [WARN] {pathogen}/{name}: folds JSON not found, skipping")
+            continue
+        with open(folds_path) as f:
+            if set(json.load(f).keys()) != {str(j) for j in range(N_FOLDS)}:
+                print(f"{prefix} [WARN] {pathogen}/{name}: folds JSON incomplete, skipping")
+                continue
+
+        mean_auroc = round(df["auroc"].mean(), 4)
+        if mean_auroc < MIN_AUROC:
+            print(f"{prefix} [SKIP] {pathogen}/{name}: mean AUROC {mean_auroc:.3f} < {MIN_AUROC}, discarding")
+            discarded.append({"pathogen": pathogen, "name": name, "mean_auroc": mean_auroc})
+            continue
+
+        records.append(aggregate(df, pathogen, name, mrow, folds_path))
         print(f"{prefix} {pathogen}/{name} processed!")
+
+    pd.DataFrame(discarded).to_csv(DISCARDED_PATH, index=False)
+    print(f"{len(discarded)} discarded models → {DISCARDED_PATH}")
 
     if not records:
         print("No completed datasets found.")
@@ -190,7 +231,7 @@ def main() -> None:
     out.insert(out.columns.get_loc("final_weight") + 1, "final_normalized_weight", normalized)
 
     out.to_csv(OUT_PATH, index=False)
-    print(f"\n{len(records)}/{n_total} datasets → {OUT_PATH}")
+    print(f"{len(records)}/{n_total} datasets → {OUT_PATH}")
 
 
 if __name__ == "__main__":
