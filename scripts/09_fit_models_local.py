@@ -80,11 +80,6 @@ def run_cv(smiles: list, y: list, pathogen: str, name: str, model_name: str) -> 
         }
         num_batches = len(model.models[0]._model.models) if model.models else np.nan
 
-        y_arr = np.array(y_test)
-
-        def fmt(arr, mask):
-            return ";".join(str(round(float(v), 3)) for v in arr[mask])
-
         records.append({
             "pathogen":                pathogen,
             "name":                    name,
@@ -102,10 +97,6 @@ def run_cv(smiles: list, y: list, pathogen: str, name: str, model_name: str) -> 
             "baseline_bedroc":         round(baseline_bedroc, 4),
             "num_batches":             num_batches,
             **oof_per_descriptor,
-            "predict_proba_actives":   fmt(scores_proba, y_arr == 1),
-            "predict_proba_inactives": fmt(scores_proba, y_arr == 0),
-            "predict_rank_actives":    fmt(scores_rank,  y_arr == 1),
-            "predict_rank_inactives":  fmt(scores_rank,  y_arr == 0),
         })
 
         fold_data[str(fold)] = {
