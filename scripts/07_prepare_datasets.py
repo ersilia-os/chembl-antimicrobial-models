@@ -85,7 +85,6 @@ def load_metadata(chembl_path: str, pubchem_path: str) -> pd.DataFrame:
     chembl = pd.read_csv(chembl_path)
     chembl["inactives"] = chembl["compounds"] - chembl["positives"]
 
-
     pubchem = pd.read_csv(pubchem_path)
     pubchem = pubchem.drop(columns=["cids", "inconclusive", "unspecified"])
     pubchem = pubchem.rename(columns={"pathogen_code": "pathogen", "aid": "name", "actives": "positives"})
@@ -110,9 +109,11 @@ def flag_chembl_duplicates(metadata: pd.DataFrame) -> pd.DataFrame:
     if not chembl_to_pubchem:
         return metadata
 
-    chembl_rows = metadata[metadata["source"] == "chembl"]
-    leading_ids = chembl_rows["name"].str.extract(r"^(CHEMBL\d+)", expand=False)
-    flagged_indices = chembl_rows.index[leading_ids.isin(chembl_to_pubchem)]
+    chembl_named = metadata[
+        (metadata["source"] == "chembl") & metadata["name"].str.startswith("CHEMBL")
+    ]
+    leading_ids = chembl_named["name"].str.split("_", n=1).str[0]
+    flagged_indices = chembl_named.index[leading_ids.isin(chembl_to_pubchem)]
     metadata.loc[flagged_indices, "keep"] = False
 
     print(f"Flagged {len(flagged_indices)} ChEMBL dataset(s) as keep=False (superseded by PubChem assays):")
@@ -168,7 +169,7 @@ def load_raw_to_canonical(positives_path: str) -> dict[str, str]:
 def _chembl_inner_filename(row: pd.Series) -> str:
     if row["label"] in ("A", "B", "M"):
         return f"{row['name']}.csv"
-    return f"ORG_{row['activity_type']}_{row['unit']}_{row['cutoff']}.csv.gz"
+    return f"{row['name']}.csv.gz"
 
 
 def _chembl_zip_path(row: pd.Series) -> str:
@@ -253,7 +254,10 @@ def augment_datasets(
             fpath = os.path.join(OUT_DIR, pathogen, f"{name}.csv")
             if os.path.exists(fpath):
                 df_tmp = pd.read_csv(fpath, usecols=["smiles", "bin"])
-                active_set.update(df_tmp.loc[df_tmp["bin"] == 1, "smiles"])
+                for smi in df_tmp.loc[df_tmp["bin"] == 1, "smiles"]:
+                    mol = Chem.MolFromSmiles(str(smi))
+                    if mol is not None:
+                        active_set.add(Chem.MolToSmiles(mol))
         pathogen_actives[pathogen] = active_set
     total_actives = sum(len(s) for s in pathogen_actives.values())
     print(f"  {total_actives:,} unique active SMILES across {len(pathogen_actives)} pathogens")
@@ -277,7 +281,9 @@ def augment_datasets(
             for canon_smi in [raw_to_canonical.get(raw_smi, raw_smi)]
             if canon_smi in decoys
             for decoy_smi in decoys[canon_smi]
-            if decoy_smi not in pathogen_active_smiles
+            for decoy_mol in [Chem.MolFromSmiles(decoy_smi)]
+            if decoy_mol is not None
+            if Chem.MolToSmiles(decoy_mol) not in pathogen_active_smiles
         })
 
         if not pool:
