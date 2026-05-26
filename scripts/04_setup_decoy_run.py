@@ -4,10 +4,10 @@ Step 04 — Set up decoy run environment.
 (0) Checks that ersilia_apptainer is available in the project conda env
     (envs/camm/bin/ersilia_apptainer). The env must be created beforehand:
         conda env create -f environment.yml --prefix ./envs/camm
-(1) Splits output/results/03_selected_positives.csv into per-split CSVs
-    (single 'smiles' column) → output/results/04_positives_splits/split_XXX.csv
+(1) Splits output/03_selected_positives.csv into per-split CSVs
+    (single 'smiles' column) → output/04_positives_splits/split_XXX.csv
 (2) Builds the eos3e6s Singularity/Apptainer SIF image via ersilia_apptainer create
-    → output/results/04_eos3e6s_v1.sif
+    → output/04_decoys_sif_image/04_eos3e6s_v1.sif
 (3) Prints the sbatch command to submit scripts/05_run_decoys.sh
 
 All steps overwrite existing outputs.
@@ -27,9 +27,10 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 MODEL = "eos3e6s"
 CAMM_BIN = os.path.join(REPO_ROOT, "envs", "camm", "bin", "ersilia_apptainer")
-RESULTS_DIR = os.path.join(REPO_ROOT, "output", "results")
+RESULTS_DIR = os.path.join(REPO_ROOT, "output")
 DIRS = {
     "splits": os.path.join(RESULTS_DIR, "04_positives_splits"),
+    "sif":    os.path.join(RESULTS_DIR, "04_decoys_sif_image"),
     "decoys": os.path.join(RESULTS_DIR, "05_decoys"),
     "logs":   os.path.join(RESULTS_DIR, "05_logs"),
 }
@@ -74,7 +75,10 @@ def split_positives(positives_path: str) -> int:
 def build_sif(version: str) -> str:
     major = version.split(".")[0]  # e.g. "v1.0.0" → "v1"
     raw_path = os.path.join(RESULTS_DIR, f"{MODEL}_{major}.sif")
-    sif_path = os.path.join(RESULTS_DIR, f"04_{MODEL}_{major}.sif")
+    sif_dir  = DIRS["sif"]
+    sif_path = os.path.join(sif_dir, f"04_{MODEL}_{major}.sif")
+
+    os.makedirs(sif_dir, exist_ok=True)
 
     if os.path.exists(sif_path):
         os.remove(sif_path)
@@ -120,8 +124,8 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--positives",
-        default=os.path.join(REPO_ROOT, "output", "results", "03_selected_positives.csv"),
-        help="Path to 03_selected_positives.csv (default: output/results/03_selected_positives.csv).",
+        default=os.path.join(REPO_ROOT, "output", "03_select_positives", "03_selected_positives.csv"),
+        help="Path to 03_selected_positives.csv (default: output/03_selected_positives/03_selected_positives.csv).",
     )
     parser.add_argument(
         "--version",

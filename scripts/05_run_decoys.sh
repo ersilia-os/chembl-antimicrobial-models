@@ -11,7 +11,7 @@
 #SBATCH --nodes=1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=4G
-#SBATCH --output=output/results/05_logs/%x_%a.out
+#SBATCH --output=output/05_logs/%x_%a.out
 #SBATCH --partition=spot_cpu
 #SBATCH --nodelist=irbccn16,irbccn41,irbccn42
 #SBATCH --requeue
@@ -24,7 +24,7 @@ export PYTHONDONTWRITEBYTECODE=1
 alpha_padded="$(printf "%03d" "$SLURM_ARRAY_TASK_ID")"
 
 envs/camm/bin/ersilia_apptainer run \
-  --sif output/results/04_eos3e6s_v1.sif \
-  --input output/results/04_positives_splits/split_${alpha_padded}.csv \
-  --output output/results/05_decoys/eos3e6s_${alpha_padded}.csv \
+  --sif output/04_decoys_sif_image/04_eos3e6s_v1.sif \
+  --input output/04_positives_splits/split_${alpha_padded}.csv \
+  --output output/05_decoys/eos3e6s_${alpha_padded}.csv \
   --verbose
