@@ -32,6 +32,7 @@ ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 sys.path.append(os.path.join(ROOT, "..", "src"))
 
+from default import DESCRIPTORS, N_FOLDS, RANDOM_SEED
 from model_name import compute_model_name
 
 METADATA_PATH = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
@@ -39,13 +40,7 @@ DATASETS_DIR  = os.path.join(REPO_ROOT, "output", "07_datasets")
 REPORTS_DIR   = os.path.join(REPO_ROOT, "output", "09_reports")
 MODELS_DIR    = os.path.join(REPO_ROOT, "output", "09_models")
 
-N_FOLDS = 5
-MODE    = "slow"
-
-DESCRIPTOR_TYPES = {
-    "slow": ["cddd", "chemeleon", "clamp", "morgan", "rdkit"],
-    "fast": ["morgan"],
-}
+MODE = "slow"
 
 def run(task_id: int) -> None:
     meta = pd.read_csv(METADATA_PATH)
@@ -63,7 +58,7 @@ def run(task_id: int) -> None:
     # 5-fold CV
     records = []
     fold_data = {}
-    kf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=42)
+    kf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=RANDOM_SEED)
     for fold, (train_idx, test_idx) in enumerate(kf.split(smiles, y)):
         smiles_train = [smiles[i] for i in train_idx]
         y_train      = [y[i]      for i in train_idx]
@@ -85,7 +80,7 @@ def run(task_id: int) -> None:
         oof_auc_map = dict(zip(model.descriptor_types, model.oof_aucs_))
         oof_per_descriptor = {
             f"oof_auc_{desc}": round(oof_auc_map[desc], 4) if desc in oof_auc_map else np.nan
-            for desc in DESCRIPTOR_TYPES[MODE]
+            for desc in DESCRIPTORS
         }
 
         num_batches = len(model.models[0]._model.models) if model.models else np.nan
