@@ -51,7 +51,6 @@ from default import (
     G_ORG_DR,
     G_ORG_SP,
     PATHOGENS,
-    RANDOM_SEED,
 )
 
 GENERAL_CSV_TO_ZIP = {
@@ -165,7 +164,7 @@ def build_aggregate_g_datasets(pathogen: str, df_meta: pd.DataFrame, zip_path: s
         with zipfile.ZipFile(zip_path) as zf:
             namelist = set(zf.namelist())
             for _, row in matching.iterrows():
-                inner = f"ORG_{row['activity_type']}_{row['unit']}_{row['cutoff']}.csv.gz"
+                inner = f"ORG_{row['activity_type']}_{row['cutoff']}.csv.gz"
                 if inner not in namelist:
                     continue
                 with zf.open(inner) as f:
@@ -263,7 +262,7 @@ def merge_pathogen(pathogen: str, general_csv: str, general_level: str = "middle
         df_general = df_general_all[
             (df_general_all["auroc"] >= 0.7) & (df_general_all["positives"] >= 50)
         ].reset_index(drop=True)
-        df_general.insert(0, "name", [f"G_ORG{i}_{row.cutoff}" for i, row in enumerate(df_general.itertuples())])
+        df_general.insert(0, "name", [f"ORG_{row.activity_type}_{row.cutoff}" for row in df_general.itertuples()])
         df_general["target_type"] = "ORGANISM"
         df_general["label"] = "G"
         df_general["assay_type"] = "general"
@@ -319,6 +318,7 @@ def print_summary(df: pd.DataFrame) -> None:
     cpds = df.groupby('pathogen')['compounds'].sum()
     for pathogen in counts.index:
         print(f"  {pathogen}: {counts[pathogen]} datasets, {cpds[pathogen]:,} compounds")
+
 
 
 def main(use_eosvc: bool, pathogens: list[str] | None = None) -> None:
