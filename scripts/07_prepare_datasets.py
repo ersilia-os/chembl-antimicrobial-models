@@ -11,19 +11,21 @@ Step 07 — Prepare datasets for model training.
 (2) Flags ChEMBL datasets superseded by a PubChem assay: if a PubChem row has
     a chembl_id and that ID appears in a ChEMBL dataset name, the ChEMBL dataset
     is marked keep=False. All other datasets are keep=True.
-(3) Loads decoy data from output/results/06_eos3e6s_v1.csv and builds a
+(3) Loads decoy data from output/06_decoys/06_eos3e6s_v1.csv and builds a
     dict mapping each canonical SMILES to up to N_DECOYS randomly sampled decoys.
-(4) Loads output/results/03_selected_positives.csv to build a raw SMILES →
+(4) Loads output/03_select_positives/03_selected_positives.csv to build a raw SMILES →
     canonical SMILES lookup, so decoys can be assigned to raw SMILES in datasets.
 (5) Extracts raw compound CSVs (keep=True only) from per-pathogen zip archives
     (ChEMBL) or flat CSVs (PubChem); writes to
-    output/results/07_datasets/{pathogen}/{name}.csv with columns smiles, bin.
+    output/07_datasets/{pathogen}/{name}.csv with columns smiles, bin.
     Raises ValueError if any bin value outside {0, 1} is found.
 (6) For datasets with ratio > 0.5, augments with decoy compounds to bring
-    the active ratio down to ~0.1. Augmented datasets gain a 'decoy' column
-    (False for original rows, True for added decoys). Datasets below the
-    threshold are not modified and will not contain a 'decoy' column.
-(7) Saves output/results/07_datasets_metadata.csv — the normalised combined
+    the active ratio down to ~0.1. Before sampling, decoy candidates that appear
+    as actives (bin=1) in any dataset of the same pathogen are excluded from the
+    pool. Augmented datasets gain a 'decoy' column (False for original rows, True
+    for added decoys). Datasets below the threshold are not modified and will not
+    contain a 'decoy' column.
+(7) Saves output/07_datasets/07_datasets_metadata.csv — the normalised combined
     metadata (all rows, including keep=False) with additional columns: 'decoys'
     (number of decoy rows added, 0 for non-augmented datasets), 'final_ratio'
     (ratio after augmentation), and 'final_compounds' (total rows after
@@ -31,16 +33,13 @@ Step 07 — Prepare datasets for model training.
 
 Usage:
     python scripts/07_prepare_datasets.py
-    python scripts/07_prepare_datasets.py --chembl_metadata path/to/chembl.csv
-    python scripts/07_prepare_datasets.py --pubchem_metadata path/to/pubchem.csv
-    python scripts/07_prepare_datasets.py --seed 0
 """
 
-import argparse
 import gzip
 import io
 import os
 import random
+import sys
 import zipfile
 
 import pandas as pd
@@ -49,15 +48,27 @@ from tqdm import tqdm
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
+sys.path.append(os.path.join(ROOT, "..", "src"))
+
+from default import (
+    CHEMBL_ZIP_FINAL,
+    CHEMBL_ZIP_GENERAL,
+    CHEMBL_ZIP_GENERAL_HIGH,
+    CHEMBL_ZIP_GENERAL_NO_PUBCHEM,
+    CHEMBL_ZIP_GENERAL_NO_PUBCHEM_HIGH,
+    HIGH_RATIO_THRESHOLD,
+    N_DECOYS,
+    RANDOM_SEED,
+    TARGET_RATIO,
+)
 
 CHEMBL_METADATA_PATH = os.path.join(REPO_ROOT, "data", "processed", "chembl", "01_chembl_datasets_all.csv")
 PUBCHEM_METADATA_PATH = os.path.join(REPO_ROOT, "data", "processed", "pubchem", "02_pubchem_datasets_organism.csv")
-DECOYS_PATH           = os.path.join(REPO_ROOT, "output", "results", "06_eos3e6s_v1.csv")
-POSITIVES_PATH        = os.path.join(REPO_ROOT, "output", "results", "03_selected_positives.csv")
+DECOYS_PATH           = os.path.join(REPO_ROOT, "output", "06_decoys", "06_eos3e6s_v1.csv")
+POSITIVES_PATH        = os.path.join(REPO_ROOT, "output", "03_select_positives", "03_selected_positives.csv")
 RAW_DIR               = os.path.join(REPO_ROOT, "data", "raw")
-OUT_DIR               = os.path.join(REPO_ROOT, "output", "results", "07_datasets")
-META_OUT_PATH         = os.path.join(REPO_ROOT, "output", "results", "07_datasets_metadata.csv")
-N_DECOYS              = 20
+OUT_DIR               = os.path.join(REPO_ROOT, "output", "07_datasets")
+META_OUT_PATH         = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
 
 
 def _validate_bin(df: pd.DataFrame, name: str) -> None:
@@ -160,14 +171,23 @@ def _chembl_inner_filename(row: pd.Series) -> str:
 
 
 def _chembl_zip_path(row: pd.Series) -> str:
-    zip_name = (
-        "19_final_datasets.zip" if row["label"] in ("A", "B", "M")
-        else "20_general_datasets.zip"
-    )
-    return os.path.join(RAW_DIR, "chembl", row["pathogen"], zip_name)
+    base = os.path.join(RAW_DIR, "chembl", row["pathogen"])
+    if row["label"] in ("A", "B", "M"):
+        return os.path.join(base, CHEMBL_ZIP_FINAL)
+    if row["pathogen"] == "pfalciparum":
+        no_pubchem = os.path.join(base, CHEMBL_ZIP_GENERAL_NO_PUBCHEM_HIGH)
+        return no_pubchem if os.path.exists(no_pubchem) else os.path.join(base, CHEMBL_ZIP_GENERAL_HIGH)
+    no_pubchem = os.path.join(base, CHEMBL_ZIP_GENERAL_NO_PUBCHEM)
+    return no_pubchem if os.path.exists(no_pubchem) else os.path.join(base, CHEMBL_ZIP_GENERAL)
 
 
 def _extract_chembl(row: pd.Series) -> pd.DataFrame:
+    if row.get("assay_type") == "general_aggregate":
+        csv_path = os.path.join(RAW_DIR, "chembl", row["pathogen"], f"{row['name']}.csv")
+        df = pd.read_csv(csv_path)[["smiles", "bin"]]
+        _validate_bin(df, row["name"])
+        return df
+
     inner = _chembl_inner_filename(row)
     with zipfile.ZipFile(_chembl_zip_path(row)) as zf:
         with zf.open(inner) as f:
@@ -213,10 +233,6 @@ def extract_datasets(metadata: pd.DataFrame) -> None:
 # Step 5 — augment high-ratio datasets with decoys
 # ---------------------------------------------------------------------------
 
-TARGET_RATIO = 0.1
-HIGH_RATIO_THRESHOLD = 0.5
-
-
 def augment_datasets(
     metadata: pd.DataFrame,
     decoys: dict[str, list[str]],
@@ -225,6 +241,21 @@ def augment_datasets(
     meta = metadata.copy()
     meta["decoys"] = 0
     meta["final_ratio"] = meta["ratio"]
+
+    # Build per-pathogen set of all active SMILES across all extracted datasets,
+    # so decoys that are known actives in any assay of the same pathogen are excluded.
+    print("Building per-pathogen active SMILES sets for decoy filtering...")
+    pathogen_actives: dict[str, set[str]] = {}
+    for pathogen, group in meta[meta["keep"]].groupby("pathogen"):
+        active_set: set[str] = set()
+        for name in group["name"]:
+            fpath = os.path.join(OUT_DIR, pathogen, f"{name}.csv")
+            if os.path.exists(fpath):
+                df_tmp = pd.read_csv(fpath, usecols=["smiles", "bin"])
+                active_set.update(df_tmp.loc[df_tmp["bin"] == 1, "smiles"])
+        pathogen_actives[pathogen] = active_set
+    total_actives = sum(len(s) for s in pathogen_actives.values())
+    print(f"  {total_actives:,} unique active SMILES across {len(pathogen_actives)} pathogens")
 
     high_mask = (meta["ratio"] > HIGH_RATIO_THRESHOLD) & meta["keep"]
     print(f"Augmenting {high_mask.sum()} datasets with ratio > {HIGH_RATIO_THRESHOLD}")
@@ -238,12 +269,14 @@ def augment_datasets(
         n_total = len(df)
         n_needed = 10 * n_pos - n_total
 
+        pathogen_active_smiles = pathogen_actives.get(row["pathogen"], set())
         pool = list({
             decoy_smi
             for raw_smi in df.loc[df["bin"] == 1, "smiles"]
             for canon_smi in [raw_to_canonical.get(raw_smi, raw_smi)]
             if canon_smi in decoys
             for decoy_smi in decoys[canon_smi]
+            if decoy_smi not in pathogen_active_smiles
         })
 
         if not pool:
@@ -253,16 +286,33 @@ def augment_datasets(
 
         n_sample = min(n_needed, len(pool))
 
+        # canonical SMILES already present in the dataset — used to filter decoys
+        existing_canonical = set()
+        for smi in df["smiles"]:
+            mol = Chem.MolFromSmiles(str(smi))
+            if mol is not None:
+                existing_canonical.add(Chem.MolToSmiles(mol))
+
         random.shuffle(pool)
         selected = []
         n_invalid = 0
+        n_duplicate = 0
         for smi in pool:
             if len(selected) >= n_sample:
                 break
-            if Chem.MolFromSmiles(smi) is not None:
-                selected.append(smi)
-            else:
+            mol = Chem.MolFromSmiles(smi)
+            if mol is None:
                 n_invalid += 1
+                continue
+            canon = Chem.MolToSmiles(mol)
+            if canon in existing_canonical:
+                n_duplicate += 1
+                continue
+            selected.append(smi)
+            existing_canonical.add(canon)
+
+        if n_duplicate:
+            print(f"  [INFO] {row['name']}: skipped {n_duplicate} decoys already present in dataset")
 
         if n_invalid:
             print(f"  [WARN] {row['name']}: dropped {n_invalid} invalid decoy SMILES")
@@ -285,7 +335,12 @@ def augment_datasets(
         meta.at[idx, "decoys"] = n_sample
         meta.at[idx, "final_ratio"] = achieved
 
-    meta["final_compounds"] = meta["compounds"] + meta["decoys"]
+    for idx, row in meta.iterrows():
+        path = os.path.join(OUT_DIR, row["pathogen"], f"{row['name']}.csv")
+        if os.path.exists(path):
+            meta.at[idx, "final_compounds"] = len(pd.read_csv(path))
+        else:
+            meta.at[idx, "final_compounds"] = row["compounds"] + row["decoys"]
     return meta
 
 
@@ -293,18 +348,12 @@ def augment_datasets(
 # Main
 # ---------------------------------------------------------------------------
 
-def main(
-    chembl_metadata_path: str,
-    pubchem_metadata_path: str,
-    decoys_path: str,
-    positives_path: str,
-    seed: int,
-) -> None:
+def main(seed: int = RANDOM_SEED) -> None:
     random.seed(seed)
-    metadata = load_metadata(chembl_metadata_path, pubchem_metadata_path)
+    metadata = load_metadata(CHEMBL_METADATA_PATH, PUBCHEM_METADATA_PATH)
     metadata = flag_chembl_duplicates(metadata)
-    decoys = load_decoys(decoys_path)
-    raw_to_canonical = load_raw_to_canonical(positives_path)
+    decoys = load_decoys(DECOYS_PATH)
+    raw_to_canonical = load_raw_to_canonical(POSITIVES_PATH)
     extract_datasets(metadata)
     enriched = augment_datasets(metadata, decoys, raw_to_canonical)
     enriched = enriched.sort_values("pathogen").reset_index(drop=True)
@@ -318,34 +367,4 @@ def main(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Extract raw compound datasets and augment with decoys for model training."
-    )
-    parser.add_argument(
-        "--chembl_metadata",
-        default=CHEMBL_METADATA_PATH,
-        help="Path to ChEMBL datasets CSV (default: data/processed/chembl/01_chembl_datasets_all.csv).",
-    )
-    parser.add_argument(
-        "--pubchem_metadata",
-        default=PUBCHEM_METADATA_PATH,
-        help="Path to PubChem datasets CSV (default: data/processed/pubchem/02_pubchem_datasets_organism.csv).",
-    )
-    parser.add_argument(
-        "--decoys",
-        default=DECOYS_PATH,
-        help="Path to aggregated decoy CSV (default: output/results/06_eos3e6s_v1.csv).",
-    )
-    parser.add_argument(
-        "--positives",
-        default=POSITIVES_PATH,
-        help="Path to 03_selected_positives.csv for raw→canonical SMILES mapping (default: output/results/03_selected_positives.csv).",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=42,
-        help="Random seed for reproducibility (default: 42).",
-    )
-    args = parser.parse_args()
-    main(args.chembl_metadata, args.pubchem_metadata, args.decoys, args.positives, args.seed)
+    main()
