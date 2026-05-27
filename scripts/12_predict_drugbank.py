@@ -14,7 +14,7 @@ recomputing them for each model independently.
 Both modes write to output/12_drugbank/{pathogen}.csv with columns:
     smiles, model_name_1, model_name_2, ...
 
-Model order follows output/10_fixed_weights/10_reports.csv.
+Model order follows output/10_reports/10_reports.csv.
 
 Usage:
     python scripts/12_predict_drugbank.py --pathogen ecoli
@@ -38,12 +38,12 @@ os.environ["HOME"] = os.path.join(REPO_ROOT, "output", "08_weights")
 DRUGBANK_PATH = os.path.join(REPO_ROOT, "data", "processed", "11_drugbank_smiles.csv")
 MODELS_DIR    = os.path.join(REPO_ROOT, "output", "09_models")
 OUT_DIR       = os.path.join(REPO_ROOT, "output", "12_drugbank")
-REPORTS_PATH  = os.path.join(REPO_ROOT, "output", "10_fixed_weights", "10_reports.csv")
+REPORTS_PATH  = os.path.join(REPO_ROOT, "output", "10_reports", "10_reports.csv")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 
 def _ordered_model_names(pathogen: str, models_dir: str) -> list[str]:
-    """Return model names for a pathogen in 09_reports/10_reports.csv order, keeping only those on disk."""
+    """Return model names for a pathogen in 10_reports.csv order, keeping only those on disk."""
     reports = pd.read_csv(REPORTS_PATH)
     rows = reports[reports["pathogen"] == pathogen]
     pathogen_dir = os.path.join(models_dir, pathogen)
@@ -54,7 +54,7 @@ def _ordered_model_names(pathogen: str, models_dir: str) -> list[str]:
 
 
 def _ordered_pathogens() -> list[str]:
-    """Return pathogens in the order they first appear in 09_reports/10_reports.csv."""
+    """Return pathogens in the order they first appear in 10_reports.csv."""
     reports = pd.read_csv(REPORTS_PATH)
     return list(dict.fromkeys(reports["pathogen"].tolist()))
 

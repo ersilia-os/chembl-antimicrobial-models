@@ -23,7 +23,7 @@ REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 DRUGBANK_PATH = os.path.join(REPO_ROOT, "data", "processed", "11_drugbank_smiles.csv")
 MODELS_DIR    = os.path.join(REPO_ROOT, "output", "09_models")
 OUT_DIR       = os.path.join(REPO_ROOT, "output", "12_drugbank")
-REPORTS_PATH  = os.path.join(REPO_ROOT, "output", "10_fixed_weights", "10_reports.csv")
+REPORTS_PATH  = os.path.join(REPO_ROOT, "output", "10_reports", "10_reports.csv")
 os.makedirs(OUT_DIR, exist_ok=True)
 
 

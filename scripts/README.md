@@ -97,7 +97,7 @@ Trains a LazyQSAR model for one dataset per SLURM array task. Each task reads `o
 
 ## 10_aggregate_reports.py
 
-Reads all per-dataset CV reports from `output/09_reports/` and collapses them into `output/10_fixed_weights/`. Applies a hard filter: datasets with mean CV AUROC < 0.7 are excluded and recorded in `10_discarded_models.csv`. Retained datasets are written to `10_reports.csv` with one row per dataset.
+Reads all per-dataset CV reports from `output/09_reports/` and collapses them into `output/10_reports/`. Applies a hard filter: datasets with mean CV AUROC < 0.7 are excluded and recorded in `10_discarded_models.csv`. Retained datasets are written to `10_reports.csv` with one row per dataset.
 
 Beyond aggregated metrics (mean/std of AUROC, AUPRC, BEDROC), each dataset gets a composite quality weight from seven components: dataset type (individual > merged > general), decoy contamination fraction, mean CV AUROC, AUPRC enrichment over prevalence, BEDROC enrichment over random, total compound count, and active compound count. The `final_weight` is the mean of these seven scores; `final_normalized_weight` rescales within each pathogen so weights sum to 100 — this is used in downstream consensus scoring.
 
@@ -113,7 +113,7 @@ Runs a single Ersilia Hub model on the DrugBank SMILES file (`data/processed/11_
 
 ## 14_consensus_scoring.py
 
-Computes a weighted consensus score per DrugBank compound for each pathogen. Reads per-model prob_rank predictions from `output/12_drugbank/` and quality weights (w1–w7) from `output/10_fixed_weights/10_reports.csv`. A per-compound, per-model eighth weight (w8) linearly rewards predictions above each model's decision cutoff. The weighted mean prob_rank is passed through a tanh transformation that restores IQR compression caused by averaging; steepness k depends on the number of models via a saturating-exponential fit. Outputs weighted and unweighted variants (with and without the tanh transform) to `output/14_consensus/`. Accepts `--pathogen <code>` for a single pathogen.
+Computes a weighted consensus score per DrugBank compound for each pathogen. Reads per-model prob_rank predictions from `output/12_drugbank/` and quality weights (w1–w7) from `output/10_reports/10_reports.csv`. A per-compound, per-model eighth weight (w8) linearly rewards predictions above each model's decision cutoff. The weighted mean prob_rank is passed through a tanh transformation that restores IQR compression caused by averaging; steepness k depends on the number of models via a saturating-exponential fit. Outputs weighted and unweighted variants (with and without the tanh transform) to `output/14_consensus/`. Accepts `--pathogen <code>` for a single pathogen.
 
 ---
 
@@ -139,7 +139,7 @@ Generates a data and model quality dashboard per pathogen. For each pathogen it 
 
 ## 18_emh_files.py
 
-Packages both Ersilia Model Hub files for each pathogen in a single run. For each pathogen, reads `output/10_fixed_weights/10_reports.csv` and `output/07_datasets/07_datasets_metadata.csv`, and writes two files to `output/18_emh_files/{pathogen}/`:
+Packages both Ersilia Model Hub files for each pathogen in a single run. For each pathogen, reads `output/10_reports/10_reports.csv` and `output/07_datasets/07_datasets_metadata.csv`, and writes two files to `output/18_emh_files/{pathogen}/`:
 
 - `reports.csv` — model quality report with pipeline-internal columns (`predict_rank_actives`, `predict_rank_inactives`) removed. Commit as `model/checkpoints/reports.csv` in the Ersilia model repository.
 - `run_columns.csv` — output column descriptions and recommended thresholds. Commit as `model/framework/columns/run_columns.csv` in the Ersilia model repository.

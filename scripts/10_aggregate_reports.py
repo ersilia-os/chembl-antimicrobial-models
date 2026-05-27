@@ -2,7 +2,7 @@
 Step 10 — Aggregate per-dataset CV reports into a single summarised file.
 
 Iterates over datasets from 07_datasets/07_datasets_metadata.csv, validates that all 5
-folds are present, and applies a mean AUROC ≥ 0.7 filter. Writes to output/10_fixed_weights/:
+folds are present, and applies a mean AUROC ≥ 0.7 filter. Writes to output/10_reports/:
   - 10_reports.csv       — one row per retained dataset with aggregated metrics and weights
   - 10_discarded_models.csv — datasets dropped for failing the AUROC threshold
 
@@ -27,7 +27,7 @@ from model_name import compute_model_name
 METADATA_PATH  = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
 REPORTS_DIR    = os.path.join(REPO_ROOT, "output", "09_reports")
 MODELS_DIR     = os.path.join(REPO_ROOT, "output", "09_models")
-OUT_DIR        = os.path.join(REPO_ROOT, "output", "10_fixed_weights")
+OUT_DIR        = os.path.join(REPO_ROOT, "output", "10_reports")
 OUT_PATH       = os.path.join(OUT_DIR, "10_reports.csv")
 DISCARDED_PATH = os.path.join(OUT_DIR, "10_discarded_models.csv")
 os.makedirs(OUT_DIR, exist_ok=True)
@@ -179,6 +179,23 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow, folds_path: str)
     return row
 
 
+def _type_rank(mrow) -> int:
+    # individual A, individual B, merged, general, general_aggregate, then PubChem (A before B) last
+    if mrow.source == "pubchem":
+        return 5 if mrow.label == "A" else 6
+    if mrow.label == "A":
+        return 0
+    if mrow.label == "B":
+        return 1
+    if mrow.label == "M":
+        return 2
+    if mrow.assay_type == "general":
+        return 3
+    if mrow.assay_type == "general_aggregate":
+        return 4
+    return 7
+
+
 def main() -> None:
     meta_df = pd.read_csv(METADATA_PATH)
     n_total = len(meta_df)
@@ -215,7 +232,10 @@ def main() -> None:
             discarded.append({"pathogen": pathogen, "name": name, "mean_auroc": mean_auroc})
             continue
 
-        records.append(aggregate(df, pathogen, name, mrow, folds_path))
+        rec = aggregate(df, pathogen, name, mrow, folds_path)
+        rec["_type_rank"] = _type_rank(mrow)
+        rec["_orig_compounds"] = int(mrow.compounds)
+        records.append(rec)
         print(f"{prefix} {pathogen}/{name} processed!")
 
     pd.DataFrame(discarded).to_csv(DISCARDED_PATH, index=False)
@@ -226,10 +246,16 @@ def main() -> None:
         return
 
     out = pd.DataFrame(records)
+    out = out.sort_values(
+        ["pathogen", "_type_rank", "_orig_compounds"],
+        ascending=[True, True, False],
+    ).reset_index(drop=True)
+
     pathogen_totals = out.groupby("pathogen")["final_weight"].transform("sum")
     normalized = (out["final_weight"] / pathogen_totals * 100).round(4)
     out.insert(out.columns.get_loc("final_weight") + 1, "final_normalized_weight", normalized)
 
+    out = out.drop(columns=["_type_rank", "_orig_compounds"])
     out.to_csv(OUT_PATH, index=False)
     print(f"{len(records)}/{n_total} datasets → {OUT_PATH}")
 
