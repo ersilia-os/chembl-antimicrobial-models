@@ -233,6 +233,13 @@ def main() -> None:
     out.to_csv(OUT_PATH, index=False)
     print(f"{len(records)}/{n_total} datasets → {OUT_PATH}")
 
+    n_nan_cutoff = int(out["decision_cutoff_rank"].isna().sum())
+    print(f"decision_cutoff_rank NaN: {n_nan_cutoff}/{len(out)}")
+    if n_nan_cutoff:
+        missing = out.loc[out["decision_cutoff_rank"].isna(), ["pathogen", "name", "model_name"]]
+        for _, r in missing.iterrows():
+            print(f"  [no metadata.json] {r['pathogen']}/{r['model_name']} ({r['name']})")
+
 
 if __name__ == "__main__":
     main()

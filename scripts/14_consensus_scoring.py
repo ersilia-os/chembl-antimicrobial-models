@@ -1,7 +1,7 @@
 """
 Step 14 — Consensus scoring of DrugBank compounds per pathogen.
 
-Reads per-pathogen rank matrices from output/results/12_drugbank/{pathogen}.csv
+Reads per-pathogen rank matrices from output/12_drugbank/{pathogen}.csv
 and computes a weighted consensus score per compound using 8 weights:
   W1–W7: model quality weights from 10_reports.csv
   W8:    0 at or below decision_cutoff_rank, linear 0→1 above it
@@ -19,10 +19,10 @@ normalises the curve through [0,0] and [1,1], guaranteeing scores above 0.5 alwa
 increase and scores below 0.5 always decrease. Ranks are preserved (tanh is strictly
 monotone). Output is guaranteed in [0, 1] without clipping.
 
-Output: output/results/14_consensus/{pathogen}.csv
-        output/results/14_consensus/{pathogen}_unweighted.csv
-        output/results/14_consensus/{pathogen}_transformed.csv
-        output/results/14_consensus/{pathogen}_unweighted_transformed.csv
+Output: output/14_consensus/{pathogen}.csv
+        output/14_consensus/{pathogen}_unweighted.csv
+        output/14_consensus/{pathogen}_transformed.csv
+        output/14_consensus/{pathogen}_unweighted_transformed.csv
         smiles | excluded_{model} x N | consensus_score
         N+1 score columns: one per model exclusion, then full consensus last.
 
@@ -32,6 +32,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 
 import numpy as np
@@ -40,16 +41,20 @@ import pandas as pd
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
-DEFAULT_IN_DIR  = os.path.join(REPO_ROOT, "output", "results", "12_drugbank")
-DEFAULT_OUT_DIR = os.path.join(REPO_ROOT, "output", "results", "14_consensus")
-REPORTS_PATH    = os.path.join(REPO_ROOT, "output", "results", "10_reports.csv")
+DEFAULT_IN_DIR  = os.path.join(REPO_ROOT, "output", "12_drugbank")
+DEFAULT_OUT_DIR = os.path.join(REPO_ROOT, "output", "14_consensus")
+REPORTS_PATH    = os.path.join(REPO_ROOT, "output", "10_reports", "10_reports.csv")
 W_COLS    = ["w1", "w2", "w3", "w4", "w5", "w6", "w7"]
 W_WEIGHTS = np.ones(len(W_COLS) + 1)  # one per w1..w7 + w8; change here to reweight
 
-# Saturating-exponential fit for IQR shrinking factor vs number of models (fitted on 9 pathogens)
+# Saturating-exponential fit for IQR shrinking factor vs number of models.
 # S(M) = 1 + _TANH_A*(1-exp(-M/_TANH_TAU)),  k(M) = 2*S(M)
-_TANH_A   = 1.156
-_TANH_TAU = 6.47
+# Parameters are produced by scripts/12b_fit_transformation.py.
+_TANH_FIT_PATH = os.path.join(REPO_ROOT, "output", "12b_fit_transformation", "12_tanh_fit.json")
+with open(_TANH_FIT_PATH) as _fh:
+    _fit = json.load(_fh)
+_TANH_A   = float(_fit["a"])
+_TANH_TAU = float(_fit["tau"])
 
 
 def _compute_w8(prob_ranks: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
