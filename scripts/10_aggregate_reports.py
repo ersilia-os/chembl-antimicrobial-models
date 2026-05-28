@@ -116,22 +116,7 @@ def _w7(df: pd.DataFrame) -> float:
     return round(_piecewise_linear(n, _W7_KNOTS), 4)
 
 
-def _rank_strings_from_folds(folds_path: str) -> tuple[str, str]:
-    with open(folds_path) as f:
-        folds = json.load(f)
-    actives, inactives = [], []
-    for k in sorted(folds.keys(), key=int):
-        fold = folds[k]
-        a, i = [], []
-        for yt, yr in zip(fold["y_true"], fold["y_rank"]):
-            s = str(round(float(yr), 3))
-            (a if int(yt) == 1 else i).append(s)
-        actives.append(";".join(a))
-        inactives.append(";".join(i))
-    return ";".join(actives), ";".join(inactives)
-
-
-def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow, folds_path: str) -> dict:
+def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow) -> dict:
     model_name = df["model_name"].iloc[0]
 
     model_dir = os.path.join(MODELS_DIR, pathogen, model_name)
@@ -174,8 +159,6 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow, folds_path: str)
         row[f"{col}_mean"] = round(vals.mean(), 4) if not vals.empty else np.nan
         row[f"{col}_std"]  = round(vals.std(),  4) if not vals.empty else np.nan
 
-    row["predict_rank_actives"], row["predict_rank_inactives"] = _rank_strings_from_folds(folds_path)
-
     return row
 
 
@@ -217,22 +200,13 @@ def main() -> None:
             print(f"{prefix} [WARN] {pathogen}/{name}: only {len(df)}/{N_FOLDS} folds complete, skipping")
             continue
 
-        folds_path = os.path.join(REPORTS_DIR, pathogen, f"{model_name_map[i - 1]}_folds.json")
-        if not os.path.exists(folds_path):
-            print(f"{prefix} [WARN] {pathogen}/{name}: folds JSON not found, skipping")
-            continue
-        with open(folds_path) as f:
-            if set(json.load(f).keys()) != {str(j) for j in range(N_FOLDS)}:
-                print(f"{prefix} [WARN] {pathogen}/{name}: folds JSON incomplete, skipping")
-                continue
-
         mean_auroc = round(df["auroc"].mean(), 4)
         if mean_auroc < MIN_AUROC:
             print(f"{prefix} [SKIP] {pathogen}/{name}: mean AUROC {mean_auroc:.3f} < {MIN_AUROC}, discarding")
             discarded.append({"pathogen": pathogen, "name": name, "mean_auroc": mean_auroc})
             continue
 
-        rec = aggregate(df, pathogen, name, mrow, folds_path)
+        rec = aggregate(df, pathogen, name, mrow)
         rec["_type_rank"] = _type_rank(mrow)
         rec["_orig_compounds"] = int(mrow.compounds)
         records.append(rec)
