@@ -12,7 +12,9 @@ score[i]    = sum_m(prob_rank[i,m] * weight[i,m]) / sum_m(weight[i,m])
 A tanh transformation is then applied to restore the IQR of the consensus scores
 toward the average IQR of the individual model prob_ranks. The steepness k depends
 only on M (number of models) via a saturating-exponential fit:
-  S(M) = 1 + 1.156*(1-exp(-M/6.47)),  k(M) = 2*S(M)
+  S(M) = 1 + a*(1-exp(-M/tau)),  k(M) = 2*S(M)
+The (a, tau) parameters are loaded from output/12b_fit_transformation/12_tanh_fit.json,
+produced by scripts/12b_fit_transformation.py.
 The center is fixed at 0.5 (neutral point of the prob_rank scale), making the
 transformation independent of the compound set being scored. Dividing by tanh(k/2)
 normalises the curve through [0,0] and [1,1], guaranteeing scores above 0.5 always

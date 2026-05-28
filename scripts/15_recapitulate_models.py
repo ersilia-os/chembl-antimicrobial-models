@@ -7,8 +7,8 @@ prob_ranks relate to B's using four metric families:
   - Raw hit overlap at top 10, 100, 500
   - AUROC: binarize B at 0.1%, 1%, 5% and score with A
 
-Input:  output/results/12_drugbank/{pathogen}.csv
-Output: output/results/15_recapitulate_models/{pathogen}.csv
+Input:  output/12_drugbank/{pathogen}.csv
+Output: output/15_recapitulate_models/{pathogen}.csv
         model_scorer | model_binarized | spearman | pearson |
         hit_overlap_10 | hit_overlap_100 | hit_overlap_500 |
         auroc_0.1pct | auroc_1pct | auroc_5pct
@@ -30,9 +30,9 @@ from sklearn.metrics import roc_auc_score
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
-DEFAULT_IN_DIR  = os.path.join(REPO_ROOT, "output", "results", "12_drugbank")
-DEFAULT_OUT_DIR = os.path.join(REPO_ROOT, "output", "results", "15_recapitulate_models")
-REPORTS_PATH    = os.path.join(REPO_ROOT, "output", "results", "10_reports.csv")
+DEFAULT_IN_DIR  = os.path.join(REPO_ROOT, "output", "12_drugbank")
+DEFAULT_OUT_DIR = os.path.join(REPO_ROOT, "output", "15_recapitulate_models")
+REPORTS_PATH    = os.path.join(REPO_ROOT, "output", "10_reports", "10_reports.csv")
 
 THRESHOLDS     = [0.001, 0.01, 0.05]
 THRESHOLD_SFXS = ["0.1pct", "1pct", "5pct"]
