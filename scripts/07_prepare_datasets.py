@@ -11,21 +11,25 @@ Step 07 — Prepare datasets for model training.
 (2) Flags ChEMBL datasets superseded by a PubChem assay: if a PubChem row has
     a chembl_id and that ID appears in a ChEMBL dataset name, the ChEMBL dataset
     is marked keep=False. All other datasets are keep=True.
-(3) Loads decoy data from output/06_decoys/06_eos3e6s_v1.csv and builds a
-    dict mapping each canonical SMILES to up to N_DECOYS randomly sampled decoys.
-(4) Loads output/03_select_positives/03_selected_positives.csv to build a raw SMILES →
-    canonical SMILES lookup, so decoys can be assigned to raw SMILES in datasets.
-(5) Extracts raw compound CSVs (keep=True only) from per-pathogen zip archives
+(3) Loads decoy data from output/06_decoys/06_eos3e6s_v1.csv and builds a dict
+    mapping each input compound's InChIKey to up to N_DECOYS randomly sampled decoys.
+(4) Extracts raw compound CSVs (keep=True only) from per-pathogen zip archives
     (ChEMBL) or flat CSVs (PubChem); writes to
     output/07_datasets/{pathogen}/{name}.csv with columns smiles, bin.
-    Raises ValueError if any bin value outside {0, 1} is found.
-(6) For datasets with ratio > 0.5, augments with decoy compounds to bring
-    the active ratio down to ~0.1. Before sampling, decoy candidates that appear
-    as actives (bin=1) in any dataset of the same pathogen are excluded from the
-    pool. Augmented datasets gain a 'decoy' column (False for original rows, True
-    for added decoys). Datasets below the threshold are not modified and will not
-    contain a 'decoy' column.
-(7) Saves output/07_datasets/07_datasets_metadata.csv — the normalised combined
+    Raises ValueError if any bin value outside {0, 1} is found. Each dataset is
+    deduplicated at the InChIKey level (dedup_by_inchikey): one row per molecule,
+    SMILES stored as RDKit canonical SMILES, and active wins (bin=1) on an
+    active/inactive label conflict. SMILES RDKit cannot parse are kept as-is.
+    (ChEMBL is already deduplicated upstream so this is largely a no-op there;
+    PubChem carries genuine duplicates and label conflicts that this resolves.)
+(5) For datasets with ratio > 0.5, augments with decoy compounds to bring
+    the active ratio down to ~0.1. Before sampling, decoy candidates whose
+    InChIKey matches a compound already in the dataset, or an active (bin=1) in
+    any dataset of the same pathogen, are excluded; selected decoys are stored as
+    canonical SMILES. Augmented datasets gain a 'decoy' column (False for original
+    rows, True for added decoys). Datasets below the threshold are not modified and
+    will not contain a 'decoy' column.
+(6) Saves output/07_datasets/07_datasets_metadata.csv — the normalised combined
     metadata (all rows, including keep=False) with additional columns: 'decoys'
     (number of decoy rows added, 0 for non-augmented datasets), 'final_ratio'
     (ratio after augmentation), and 'final_compounds' (total rows after
@@ -65,7 +69,6 @@ from default import (
 CHEMBL_METADATA_PATH = os.path.join(REPO_ROOT, "data", "processed", "chembl", "01_chembl_datasets_all.csv")
 PUBCHEM_METADATA_PATH = os.path.join(REPO_ROOT, "data", "processed", "pubchem", "02_pubchem_datasets_organism.csv")
 DECOYS_PATH           = os.path.join(REPO_ROOT, "output", "06_decoys", "06_eos3e6s_v1.csv")
-POSITIVES_PATH        = os.path.join(REPO_ROOT, "output", "03_select_positives", "03_selected_positives.csv")
 RAW_DIR               = os.path.join(REPO_ROOT, "data", "raw")
 OUT_DIR               = os.path.join(REPO_ROOT, "output", "07_datasets")
 META_OUT_PATH         = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
@@ -75,6 +78,63 @@ def _validate_bin(df: pd.DataFrame, name: str) -> None:
     invalid = df.loc[~df["bin"].isin([0, 1]), "bin"].unique()
     if len(invalid) > 0:
         raise ValueError(f"Dataset {name!r} contains invalid bin values: {invalid.tolist()}")
+
+
+# Memoise SMILES -> (canonical SMILES, InChIKey) for the whole run. The same SMILES
+# recurs heavily (duplicate strings within a dataset, shared compounds across datasets,
+# and again between extraction, decoy loading and augmentation), and InChIKey generation
+# is the dominant cost — caching avoids recomputing it. Keys/values are strings only
+# (no RDKit mol objects are retained).
+_IK_CACHE: dict[str, tuple] = {}
+
+
+def smiles_to_inchikey(smi: str) -> tuple:
+    """Return (canonical_smiles, inchikey) for a SMILES, or (None, None) if unparsable.
+
+    Result is memoised in the module-level _IK_CACHE.
+    """
+    s = str(smi)
+    cached = _IK_CACHE.get(s)
+    if cached is not None:
+        return cached
+    mol = Chem.MolFromSmiles(s)
+    result = (None, None) if mol is None else (Chem.MolToSmiles(mol), Chem.MolToInchiKey(mol))
+    _IK_CACHE[s] = result
+    return result
+
+
+def dedup_by_inchikey(df: pd.DataFrame, name: str) -> pd.DataFrame:
+    """Collapse rows to one per InChIKey.
+
+    Parsable SMILES are grouped by InChIKey; each group becomes a single row whose
+    SMILES is the RDKit canonical SMILES and whose bin is the max over the group
+    (active wins on an active/inactive label conflict). Rows whose SMILES RDKit
+    cannot parse are kept verbatim — never merged, never dropped.
+    """
+    canon_by_ik: dict[str, str] = {}   # inchikey -> canonical SMILES (first seen)
+    bins_by_ik: dict[str, set] = {}    # inchikey -> set of bins observed
+    order: list[str] = []              # inchikeys in first-appearance order
+    unparsable: list[dict] = []        # rows kept as-is
+
+    for smi, b in zip(df["smiles"], df["bin"]):
+        canon, ik = smiles_to_inchikey(smi)
+        if ik is None:
+            unparsable.append({"smiles": smi, "bin": int(b)})
+            continue
+        if ik not in bins_by_ik:
+            bins_by_ik[ik] = set()
+            canon_by_ik[ik] = canon
+            order.append(ik)
+        bins_by_ik[ik].add(int(b))
+
+    rows = [{"smiles": canon_by_ik[ik], "bin": max(bins_by_ik[ik])} for ik in order]
+    n_conflicts = sum(1 for ik in order if len(bins_by_ik[ik]) > 1)
+    n_collapsed = len(df) - len(order) - len(unparsable)
+    if n_collapsed or n_conflicts or unparsable:
+        print(f"  [{name}] IK-dedup: {len(df)} -> {len(rows) + len(unparsable)} rows "
+              f"({n_collapsed} duplicate rows collapsed, {n_conflicts} active/inactive "
+              f"conflicts resolved active-first, {len(unparsable)} unparsable kept as-is)")
+    return pd.DataFrame(rows + unparsable, columns=["smiles", "bin"]).reset_index(drop=True)
 
 
 # ---------------------------------------------------------------------------
@@ -130,40 +190,37 @@ def flag_chembl_duplicates(metadata: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 def load_decoys(decoys_path: str) -> dict[str, list[str]]:
+    """Map each input compound's InChIKey to up to N_DECOYS sampled decoy SMILES.
+
+    Keying on InChIKey (rather than a canonical-SMILES string) makes the decoy
+    lookup robust to notation/canonicalisation differences between this script and
+    whatever produced the decoy file. On an InChIKey collision the first list wins.
+    """
     print("Loading decoy data...")
     df = pd.read_csv(decoys_path)
     decoy_cols = [c for c in df.columns if c not in ("key", "input")]
-    result = {}
+    result: dict[str, list[str]] = {}
+    n_unparsable = 0
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Loading decoys", unit="cpd"):
+        _, ik = smiles_to_inchikey(row["input"])
+        if ik is None:
+            n_unparsable += 1
+            continue
         candidates = row[decoy_cols].dropna().tolist()
         if not candidates:
             continue
-        result[row["input"]] = (
-            candidates if len(candidates) <= N_DECOYS
-            else random.sample(candidates, N_DECOYS)
-        )
+        sampled = candidates if len(candidates) <= N_DECOYS else random.sample(candidates, N_DECOYS)
+        result.setdefault(ik, sampled)
     counts = [len(v) for v in result.values()]
-    print(f"Loaded decoys: {len(result)} compounds with {min(counts)}–{max(counts)} decoys each")
+    msg = f"Loaded decoys: {len(result)} InChIKeys with {min(counts)}–{max(counts)} decoys each"
+    if n_unparsable:
+        msg += f" ({n_unparsable} unparsable inputs skipped)"
+    print(msg)
     return result
 
 
 # ---------------------------------------------------------------------------
-# Step 3 — load raw → canonical SMILES mapping
-# ---------------------------------------------------------------------------
-
-def load_raw_to_canonical(positives_path: str) -> dict[str, str]:
-    df = pd.read_csv(positives_path, usecols=["canonical_smiles", "smiles"])
-    mapping = {}
-    for _, row in df.iterrows():
-        canonical = row["canonical_smiles"]
-        for raw in str(row["smiles"]).split(";"):
-            mapping[raw.strip()] = canonical
-    print(f"Loaded raw→canonical mapping: {len(mapping):,} raw SMILES entries")
-    return mapping
-
-
-# ---------------------------------------------------------------------------
-# Step 4 — extract datasets
+# Step 3 — extract datasets
 # ---------------------------------------------------------------------------
 
 def _chembl_inner_filename(row: pd.Series) -> str:
@@ -226,6 +283,7 @@ def extract_datasets(metadata: pd.DataFrame) -> None:
                 print(f"  [WARN] PubChem dataset not found or missing columns: {row['name']}")
                 continue
 
+        df = dedup_by_inchikey(df, row["name"])
         df.to_csv(out_path, index=False)
 
     print(f"Datasets written to {OUT_DIR}")
@@ -238,15 +296,31 @@ def extract_datasets(metadata: pd.DataFrame) -> None:
 def augment_datasets(
     metadata: pd.DataFrame,
     decoys: dict[str, list[str]],
-    raw_to_canonical: dict[str, str],
 ) -> pd.DataFrame:
     meta = metadata.copy()
+
+    # The extracted CSVs are now InChIKey-deduplicated, so recompute compounds/positives/
+    # ratio (and inactives) from the actual rows. This mainly affects PubChem datasets and
+    # also sets the ratio used by the high-ratio augmentation gate below.
+    print("Recomputing compound counts from deduped datasets...")
+    for idx, row in meta[meta["keep"]].iterrows():
+        fpath = os.path.join(OUT_DIR, row["pathogen"], f"{row['name']}.csv")
+        if not os.path.exists(fpath):
+            continue
+        df_tmp = pd.read_csv(fpath, usecols=["smiles", "bin"])
+        n_comp = len(df_tmp)
+        n_pos = int((df_tmp["bin"] == 1).sum())
+        meta.at[idx, "compounds"] = n_comp
+        meta.at[idx, "positives"] = n_pos
+        meta.at[idx, "inactives"] = n_comp - n_pos
+        meta.at[idx, "ratio"] = round(n_pos / n_comp, 3) if n_comp else 0.0
+
     meta["decoys"] = 0
     meta["final_ratio"] = meta["ratio"]
 
-    # Build per-pathogen set of all active SMILES across all extracted datasets,
+    # Build per-pathogen set of active-compound InChIKeys across all extracted datasets,
     # so decoys that are known actives in any assay of the same pathogen are excluded.
-    print("Building per-pathogen active SMILES sets for decoy filtering...")
+    print("Building per-pathogen active InChIKey sets for decoy filtering...")
     pathogen_actives: dict[str, set[str]] = {}
     for pathogen, group in meta[meta["keep"]].groupby("pathogen"):
         active_set: set[str] = set()
@@ -255,12 +329,12 @@ def augment_datasets(
             if os.path.exists(fpath):
                 df_tmp = pd.read_csv(fpath, usecols=["smiles", "bin"])
                 for smi in df_tmp.loc[df_tmp["bin"] == 1, "smiles"]:
-                    mol = Chem.MolFromSmiles(str(smi))
-                    if mol is not None:
-                        active_set.add(Chem.MolToSmiles(mol))
+                    _, ik = smiles_to_inchikey(smi)
+                    if ik is not None:
+                        active_set.add(ik)
         pathogen_actives[pathogen] = active_set
     total_actives = sum(len(s) for s in pathogen_actives.values())
-    print(f"  {total_actives:,} unique active SMILES across {len(pathogen_actives)} pathogens")
+    print(f"  {total_actives:,} unique active InChIKeys across {len(pathogen_actives)} pathogens")
 
     high_mask = (meta["ratio"] > HIGH_RATIO_THRESHOLD) & meta["keep"]
     print(f"Augmenting {high_mask.sum()} datasets with ratio > {HIGH_RATIO_THRESHOLD}")
@@ -274,16 +348,17 @@ def augment_datasets(
         n_total = len(df)
         n_needed = 10 * n_pos - n_total
 
-        pathogen_active_smiles = pathogen_actives.get(row["pathogen"], set())
+        pathogen_active_iks = pathogen_actives.get(row["pathogen"], set())
         pool = list({
             decoy_smi
-            for raw_smi in df.loc[df["bin"] == 1, "smiles"]
-            for canon_smi in [raw_to_canonical.get(raw_smi, raw_smi)]
-            if canon_smi in decoys
-            for decoy_smi in decoys[canon_smi]
-            for decoy_mol in [Chem.MolFromSmiles(decoy_smi)]
-            if decoy_mol is not None
-            if Chem.MolToSmiles(decoy_mol) not in pathogen_active_smiles
+            for active_smi in df.loc[df["bin"] == 1, "smiles"]
+            for active_ik in [smiles_to_inchikey(active_smi)[1]]
+            if active_ik is not None
+            if active_ik in decoys
+            for decoy_smi in decoys[active_ik]
+            for decoy_ik in [smiles_to_inchikey(decoy_smi)[1]]
+            if decoy_ik is not None
+            if decoy_ik not in pathogen_active_iks
         })
 
         if not pool:
@@ -293,12 +368,12 @@ def augment_datasets(
 
         n_sample = min(n_needed, len(pool))
 
-        # canonical SMILES already present in the dataset — used to filter decoys
-        existing_canonical = set()
+        # InChIKeys already present in the dataset — used to filter decoys
+        existing_iks = set()
         for smi in df["smiles"]:
-            mol = Chem.MolFromSmiles(str(smi))
-            if mol is not None:
-                existing_canonical.add(Chem.MolToSmiles(mol))
+            _, ik = smiles_to_inchikey(smi)
+            if ik is not None:
+                existing_iks.add(ik)
 
         random.shuffle(pool)
         selected = []
@@ -307,16 +382,15 @@ def augment_datasets(
         for smi in pool:
             if len(selected) >= n_sample:
                 break
-            mol = Chem.MolFromSmiles(smi)
-            if mol is None:
+            canon, ik = smiles_to_inchikey(smi)
+            if ik is None:
                 n_invalid += 1
                 continue
-            canon = Chem.MolToSmiles(mol)
-            if canon in existing_canonical:
+            if ik in existing_iks:
                 n_duplicate += 1
                 continue
-            selected.append(smi)
-            existing_canonical.add(canon)
+            selected.append(canon)  # store canonical SMILES, IK-unique
+            existing_iks.add(ik)
 
         if n_duplicate:
             print(f"  [INFO] {row['name']}: skipped {n_duplicate} decoys already present in dataset")
@@ -360,9 +434,8 @@ def main(seed: int = RANDOM_SEED) -> None:
     metadata = load_metadata(CHEMBL_METADATA_PATH, PUBCHEM_METADATA_PATH)
     metadata = flag_chembl_duplicates(metadata)
     decoys = load_decoys(DECOYS_PATH)
-    raw_to_canonical = load_raw_to_canonical(POSITIVES_PATH)
     extract_datasets(metadata)
-    enriched = augment_datasets(metadata, decoys, raw_to_canonical)
+    enriched = augment_datasets(metadata, decoys)
     enriched = enriched.sort_values("pathogen").reset_index(drop=True)
     n_dropped = (~enriched["keep"]).sum()
     enriched = enriched[enriched["keep"]].drop(columns=["keep"]).reset_index(drop=True)
