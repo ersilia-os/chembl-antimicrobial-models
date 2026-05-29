@@ -98,7 +98,7 @@ def main():
     stylia.set_format("slide")
     stylia.set_style("article")
 
-    pal = CategoricalPalette("ersilia")
+    pal = CategoricalPalette("npg")
     chembl_color  = pal.get(8)[0]
     pubchem_color = "#1f77b4"  # blue
 
