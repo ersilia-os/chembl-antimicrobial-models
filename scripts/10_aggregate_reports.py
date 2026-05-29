@@ -62,11 +62,11 @@ def _w1(label: str) -> float:
 
 
 def _w2(df: pd.DataFrame, n_decoys: int) -> float:
-    """Fraction of the inactive class that is genuine: 1.0 if no decoys, decreasing as decoys dominate the negatives."""
-    n_inactives = int(df["compounds_test"].sum()) - int(df["positives_test"].sum())
-    if n_inactives == 0:
-        return 1.0
-    return round(max(0.0, 1.0 - n_decoys / n_inactives), 4)
+    """Fraction of the negative class that is real (not synthetic decoys):
+    n_real_inactives / (n_real_inactives + n_decoys).
+    1.0 when no decoys were added; decreases as decoys come to dominate."""
+    n_negatives = int(df["compounds_test"].sum()) - int(df["positives_test"].sum())
+    return round(1.0 - n_decoys / n_negatives, 4)
 
 
 def _w3(df: pd.DataFrame) -> float:
@@ -135,6 +135,7 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow) -> dict:
 
     row["n_compounds"] = int(df["compounds_test"].sum())
     row["n_positives"] = int(df["positives_test"].sum())
+    row["n_decoys"]    = int(mrow.decoys)
 
     for col in ("auroc", "auprc", "baseline_auprc", "bedroc", "baseline_bedroc"):
         row[f"{col}_mean"] = round(df[col].mean(), 4)
