@@ -15,6 +15,8 @@ only on M (number of models) via a saturating-exponential fit:
   S(M) = 1 + a*(1-exp(-M/tau)),  k(M) = 2*S(M)
 The (a, tau) parameters are loaded from output/12b_fit_transformation/12_tanh_fit.json,
 produced by scripts/12b_fit_transformation.py.
+The full consensus column uses k(M); the leave-one-out excluded_* columns use
+k(M-1) since they average over one fewer model and shrink slightly less.
 The center is fixed at 0.5 (neutral point of the prob_rank scale), making the
 transformation independent of the compound set being scored. Dividing by tanh(k/2)
 normalises the curve through [0,0] and [1,1], guaranteeing scores above 0.5 always
@@ -104,10 +106,16 @@ def _tanh_transform(x: np.ndarray, k: float) -> np.ndarray:
     return 0.5 + 0.5 * np.tanh(k * (x - 0.5)) / np.tanh(k / 2)
 
 
-def _apply_transform(df: pd.DataFrame, k: float) -> pd.DataFrame:
+def _apply_transform(df: pd.DataFrame, k_consensus: float, k_excluded: float) -> pd.DataFrame:
+    # consensus_score is built from M models; excluded_* columns from M-1 models.
+    # Each group gets its own k so the IQR-restoring strength matches the number
+    # of models actually averaged.
     out = df.copy()
-    score_cols = [c for c in df.columns if c != "smiles"]
-    out[score_cols] = _tanh_transform(df[score_cols].values, k).round(4)
+    for c in df.columns:
+        if c == "smiles":
+            continue
+        k = k_consensus if c == "consensus_score" else k_excluded
+        out[c] = _tanh_transform(df[c].values, k).round(4)
     return out
 
 
@@ -161,23 +169,24 @@ def run(pathogen: str, in_dir: str, reports_df: pd.DataFrame, out_path: str) -> 
     print(f"  [{pathogen}] unweighted -> {unweighted_path}")
 
     # --- tanh IQR-restoring transformation (k depends only on number of models) ---
-    k             = _k_from_n_models(len(model_cols))
+    k_consensus   = _k_from_n_models(len(model_cols))
+    k_excluded    = _k_from_n_models(len(model_cols) - 1)
     avg_model_iqr = float(np.mean([df[m].quantile(0.75) - df[m].quantile(0.25) for m in model_cols]))
 
     w_cons_iqr = float(out["consensus_score"].quantile(0.75) - out["consensus_score"].quantile(0.25))
-    out_t      = _apply_transform(out, k)
+    out_t      = _apply_transform(out, k_consensus, k_excluded)
     t_path     = out_path.replace(".csv", "_transformed.csv")
     out_t.to_csv(t_path, index=False)
     w_iqr      = float(out_t["consensus_score"].quantile(0.75) - out_t["consensus_score"].quantile(0.25))
-    print(f"  [{pathogen}] weighted transform:   k={k:.3f}  "
+    print(f"  [{pathogen}] weighted transform:   k={k_consensus:.3f} (k_excluded={k_excluded:.3f})  "
           f"target_IQR={avg_model_iqr:.4f}  consensus_IQR={w_cons_iqr:.4f}  achieved_IQR={w_iqr:.4f}  -> {t_path}")
 
     uw_cons_iqr = float(uw_df["consensus_score"].quantile(0.75) - uw_df["consensus_score"].quantile(0.25))
-    uw_t        = _apply_transform(uw_df, k)
+    uw_t        = _apply_transform(uw_df, k_consensus, k_excluded)
     ut_path     = unweighted_path.replace(".csv", "_transformed.csv")
     uw_t.to_csv(ut_path, index=False)
     uw_iqr      = float(uw_t["consensus_score"].quantile(0.75) - uw_t["consensus_score"].quantile(0.25))
-    print(f"  [{pathogen}] unweighted transform: k={k:.3f}  "
+    print(f"  [{pathogen}] unweighted transform: k={k_consensus:.3f} (k_excluded={k_excluded:.3f})  "
           f"target_IQR={avg_model_iqr:.4f}  consensus_IQR={uw_cons_iqr:.4f}  achieved_IQR={uw_iqr:.4f}  -> {ut_path}")
 
 
