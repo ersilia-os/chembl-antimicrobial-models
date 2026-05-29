@@ -15,7 +15,8 @@ to all (M, k*) pairs, and plots:
          each labelled with the pathogen code.
 
 Prints a summary table and saves it together with the figure under
-output/12b_fit_transformation/.
+output/12_drugbank/ (as 12b_fit_transformation.csv, 12b_fit_transformation.png,
+and 12b_tanh_fit.json).
 """
 
 import json

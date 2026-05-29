@@ -13,7 +13,7 @@ A tanh transformation is then applied to restore the IQR of the consensus scores
 toward the average IQR of the individual model prob_ranks. The steepness k depends
 only on M (number of models) via a saturating-exponential fit:
   S(M) = 1 + a*(1-exp(-M/tau)),  k(M) = 2*S(M)
-The (a, tau) parameters are loaded from output/12b_fit_transformation/12_tanh_fit.json,
+The (a, tau) parameters are loaded from output/12_drugbank/12b_tanh_fit.json,
 produced by scripts/12b_fit_transformation.py.
 The full consensus column uses k(M); the leave-one-out excluded_* columns use
 k(M-1) since they average over one fewer model and shrink slightly less.
@@ -54,7 +54,7 @@ W_WEIGHTS = np.ones(len(W_COLS) + 1)  # one per w1..w7 + w8; change here to rewe
 # Saturating-exponential fit for IQR shrinking factor vs number of models.
 # S(M) = 1 + _TANH_A*(1-exp(-M/_TANH_TAU)),  k(M) = 2*S(M)
 # Parameters are produced by scripts/12b_fit_transformation.py.
-_TANH_FIT_PATH = os.path.join(REPO_ROOT, "output", "12b_fit_transformation", "12_tanh_fit.json")
+_TANH_FIT_PATH = os.path.join(REPO_ROOT, "output", "12_drugbank", "12b_tanh_fit.json")
 with open(_TANH_FIT_PATH) as _fh:
     _fit = json.load(_fh)
 _TANH_A   = float(_fit["a"])
@@ -133,7 +133,14 @@ def run(pathogen: str, in_dir: str, reports_df: pd.DataFrame, out_path: str) -> 
         print(f"  [SKIP] {pathogen}: {len(model_cols)} model(s) — consensus requires at least 2")
         return
 
-    prob_ranks = df[model_cols].fillna(0.0).values
+    nan_counts = df[model_cols].isna().sum()
+    if nan_counts.any():
+        bad = nan_counts[nan_counts > 0].to_dict()
+        raise ValueError(
+            f"[{pathogen}] NaN predictions in step-12 output: {bad}. "
+            "Decide how to handle these (drop / impute / exclude pairwise) before scoring."
+        )
+    prob_ranks = df[model_cols].values
     w_quality  = np.array([model_reports.loc[m, W_COLS].values for m in model_cols], dtype=float)
     cutoffs    = np.array([model_reports.loc[m, "decision_cutoff_rank"] for m in model_cols], dtype=float)
 
