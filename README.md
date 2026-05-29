@@ -1,3 +1,8 @@
+This project has been financed by Project PID2023-148309OA-I00 funded by MICIU/AEI/10.13039/501100011033 and by ERDF, EU.
+
+<img width="300" alt="miciu_cofinanciado" src="https://github.com/user-attachments/assets/65da03a5-a684-4fb9-9481-20a176cde27a" />
+
+
 # Antimicrobial ML Models
 
 This repository trains binary antimicrobial activity classification models from curated bioactivity datasets sourced from [ChEMBL](https://github.com/ersilia-os/chembl-antimicrobial-tasks) and [PubChem](https://github.com/ersilia-os/pubchem-antimicrobial-tasks). For each pathogen of interest, the pipeline downloads curated binary datasets (SMILES + activity label), optionally augments them with decoys, and trains QSAR models using [LazyQSAR](https://github.com/ersilia-os/lazy-qsar).
