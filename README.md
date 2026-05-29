@@ -58,56 +58,65 @@ See [scripts/README.md](scripts/README.md) for a description of each step.
 
 | Step | Script |
 |------|--------|
-| 01 | `scripts/01_download_datasets_chembl.py` |
-| 02 | `scripts/02_download_datasets_pubchem.py` |
-| 03 | `scripts/03_select_positives.py` |
-| 04 | `scripts/04_setup_decoy_run.py` |
-| 05 | `scripts/05_run_decoys.sh` *(HPC)* |
-| 06 | `scripts/06_aggregate_decoys.py` |
-| 07 | `scripts/07_prepare_datasets.py` |
-| 08 | `scripts/08_download_weights.py` *(HPC)* |
-| 09 | `scripts/09_run_models.sh` *(HPC)* |
-| 10 | `scripts/10_aggregate_reports.py` |
-| 11 | `scripts/11_download_drugbank.py` |
-| 12 | `scripts/12_predict_drugbank.py` |
-| 13 | `scripts/13_predict_drugbank_ersilia.sh` |
-| 14 | `scripts/14_consensus_scoring.py` |
-| 15 | `scripts/15_recapitulate_models.py` |
-| 16 | `scripts/16_recapitulate_consensus.py` |
-| 17 | `scripts/17_quality_checks.py` |
-| 18 | `scripts/18_emh_files.py` |
-| 19 | `scripts/19_euopenscreen_benchmark.sh` |
+| 01  | `scripts/01_download_datasets_chembl.py` |
+| 02a | `scripts/02a_download_datasets_pubchem.py` |
+| 02b | `scripts/02b_plot_datasets.py` |
+| 03  | `scripts/03_select_positives.py` |
+| 04  | `scripts/04_setup_decoy_run.py` *(HPC)* |
+| 05  | `scripts/05_run_decoys.sh` *(HPC)* / `scripts/05_run_decoys_ersilia.sh` *(local)* |
+| 06  | `scripts/06_aggregate_decoys.py` |
+| 07  | `scripts/07_prepare_datasets.py` |
+| 07b | `scripts/07b_quality_checks.py` |
+| 07c | `scripts/07c_plot_datasets.py` |
+| 08  | `scripts/08_download_weights.py` *(HPC)* |
+| 09  | `scripts/09_run_models.sh` *(HPC)* / `scripts/09_fit_models_local.py` *(local)* |
+| 10a | `scripts/10a_aggregate_reports.py` |
+| 10b | `scripts/10b_training_results.py` |
+| 11  | `scripts/11_download_drugbank.py` |
+| 12a | `scripts/12a_predict_drugbank.py` / `scripts/12a_predict_drugbank_local.py` |
+| 12b | `scripts/12b_fit_transformation.py` |
+| 13  | `scripts/13_predict_drugbank_ersilia.sh` |
+| 14  | `scripts/14_consensus_scoring.py` |
+| 15  | `scripts/15_recapitulate_models.py` |
+| 16  | `scripts/16_recapitulate_consensus.py` |
+| 16b | `scripts/16b_consensus_results.py` |
+| 17  | `scripts/17_quality_checks.py` |
+| 18  | `scripts/18_emh_files.py` |
 
 ## Repository structure
 
 ```
 chembl-antimicrobial-models/
 ├── config/
-│   └── pathogens.csv           # Pathogen code → organism name mapping
+│   └── pathogens.csv               # Pathogen code → organism name mapping
 ├── data/
-│   ├── raw/                    # Downloaded datasets per pathogen
-│   └── processed/              # Merged dataset metadata per pathogen
+│   ├── raw/                        # Downloaded datasets per pathogen
+│   └── processed/                  # Merged dataset metadata per pathogen
 ├── envs/
-│   └── camm/                   # Project conda env (gitignored; created with --prefix)
-├── scripts/                    # Pipeline scripts (01–19)
-├── notebooks/                  # Exploratory notebooks
+│   └── camm/                       # Project conda env (gitignored; created with --prefix)
+├── scripts/                        # Pipeline scripts
+├── notebooks/                      # Exploratory notebooks
 └── output/
-    └── results/
-        ├── 03_selected_positives.csv        # Unique active SMILES with provenance
-        ├── 04_positives_splits/             # Per-split input CSVs (split_XXX.csv) [removed by step 05 --cleanup]
-        ├── 04_eos3e6s_v1.sif                # Apptainer SIF image
-        ├── 05_decoys/                       # eos3e6s output CSVs per split [removed by step 05 --cleanup]
-        ├── 05_logs/                         # SLURM job logs for decoy generation [removed by step 05 --cleanup]
-        ├── 06_eos3e6s_v1.csv                # Aggregated eos3e6s predictions
-        ├── 07_datasets/                     # Per-pathogen compound CSVs (smiles, bin)
-        ├── 07_datasets_metadata.csv         # Normalised merged metadata sorted by pathogen; adds decoys, final_ratio, final_compounds columns
-        ├── 08_weights/                      # LazyQSAR descriptor weight cache (created by step 08)
-        ├── 09_reports/                      # Per-dataset CV reports (one CSV per dataset)
-        ├── 09_models/                       # Trained LazyQSAR models (one dir per dataset)
-        ├── 09_logs/                         # SLURM job logs for model training
-        ├── 10_reports.csv                   # One summarised row per dataset: model_name, metrics, weights, decision cutoff, portfolio, predict_rank scores
-        ├── 12_drugbank/                     # Per-pathogen DrugBank rank predictions (one CSV per pathogen)
-        ├── 13_consensus/                    # Per-pathogen consensus scores (smiles, consensus_score)
+    ├── 02_datasets/                # 02b dataset-summary figure
+    ├── 03_select_positives/        # Selected active SMILES + per-split inputs
+    ├── 04_positives_splits/        # split_XXX.csv (HPC) [removed by step 06 --cleanup]
+    ├── 04_decoys_sif_image/        # Apptainer SIF image for eos3e6s
+    ├── 05_decoys/                  # eos3e6s output per split [removed by step 06 --cleanup]
+    ├── 05_logs/                    # SLURM logs for decoy generation [removed by step 06 --cleanup]
+    ├── 06_decoys/                  # 06_eos3e6s_v1.csv — aggregated decoys
+    ├── 07_datasets/                # Per-pathogen compound CSVs + 07_datasets_metadata.csv + 07_dup_report.csv + 07c figure
+    ├── 08_weights/                 # LazyQSAR descriptor weight cache (created by step 08)
+    ├── 09_reports/                 # Per-dataset CV reports + _folds.json
+    ├── 09_models/                  # Trained LazyQSAR models (one dir per dataset)
+    ├── 09_logs/                    # SLURM logs for model training
+    ├── 10_reports/                 # 10_reports.csv, 10_discarded_models.csv, plots/ (10b)
+    ├── 12_drugbank/                # Per-pathogen DrugBank rank predictions + 12b tanh fit
+    ├── 13_drugbank_ersilia/        # Single-model Ersilia Hub predictions on DrugBank
+    ├── 14_consensus/               # Per-pathogen consensus + unweighted/transformed variants
+    ├── 15_recapitulate_models/     # Pairwise model agreement
+    ├── 16_recapitulate_consensus/  # Leave-one-out + full consensus recap + plots/ (16b)
+    ├── 17_quality_checks/          # Per-pathogen QA + top-level summary.csv
+    └── 18_emh_files/               # Ersilia Model Hub submission bundles
 ```
 
 ## About the Ersilia Open Source Initiative

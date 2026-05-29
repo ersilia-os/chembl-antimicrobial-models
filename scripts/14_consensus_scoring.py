@@ -200,11 +200,11 @@ def run(pathogen: str, in_dir: str, reports_df: pd.DataFrame, out_path: str) -> 
 def plot_transform_scenarios(reports_df: pd.DataFrame, in_dir: str, out_dir: str) -> None:
     """Generate transform_scenarios.png: left=tanh curves for M=2,5,10,20,100;
     right=M→k fitted curve with real empirical (M, k) points per pathogen."""
-    import matplotlib.pyplot as plt  # local import — not required for scoring
+    import stylia
+    from stylia import CategoricalPalette, save_figure
 
     x      = np.linspace(0, 1, 500)
     M_show = [2, 5, 10, 20, 100]
-    colors = plt.cm.viridis(np.linspace(0.1, 0.9, len(M_show)))
 
     # Collect real (M, k_real) per pathogen from output files
     empirical = {}
@@ -224,45 +224,51 @@ def plot_transform_scenarios(reports_df: pd.DataFrame, in_dir: str, out_dir: str
         if cons_iqr > 0:
             empirical[pathogen] = (len(model_cols), 2.0 * avg_iqr / cons_iqr)
 
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    stylia.set_format("slide")
+    stylia.set_style("article")
+    pal = CategoricalPalette("npg")
+    curve_colors = pal.get(len(M_show))
+    fit_color = pal.get(2)[1]
+
+    fig, axs = stylia.create_figure(1, 2, width=1.0, height=0.4)
 
     # Left: transformation curves
-    ax = axes[0]
-    for M, c in zip(M_show, colors):
+    ax = axs.next()
+    for M, c in zip(M_show, curve_colors):
         k = _k_from_n_models(M)
         ax.plot(x, _tanh_transform(x, k), color=c, lw=2, label=f"M={M}  (k={k:.2f})")
     ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5, label="identity")
-    ax.set_xlabel("Consensus score (input)", fontsize=11)
-    ax.set_ylabel("Transformed score (output)", fontsize=11)
-    ax.set_title("Tanh IQR-restoring transformation", fontsize=12)
+    ax.set_xlabel("Consensus score (input)")
+    ax.set_ylabel("Transformed score (output)")
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
     ax.legend(fontsize=9, loc="upper left")
-    ax.set_xlim(0, 1); ax.set_ylim(0, 1)
+    stylia.label(ax, title="Tanh IQR-restoring transformation")
     formula = r"$f(x) = 0.5 + \frac{0.5 \cdot \tanh(k(x-0.5))}{\tanh(k/2)}$"
     ax.text(0.97, 0.05, formula, transform=ax.transAxes, ha="right", va="bottom",
-            fontsize=10, bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.8))
-    ax.grid(True, alpha=0.3)
+            fontsize=11, bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.8))
 
     # Right: M → k fitted curve + real empirical points
-    ax2 = axes[1]
+    ax2 = axs.next()
     M_cont = np.linspace(2, 100, 500)
-    ax2.plot(M_cont, [_k_from_n_models(m) for m in M_cont], "steelblue", lw=2.5)
+    ax2.plot(M_cont, [_k_from_n_models(m) for m in M_cont], color=fit_color, lw=2.5)
     for pname, (M, k_real) in empirical.items():
-        ax2.scatter(M, k_real, color="black", s=45, zorder=5)
+        ax2.scatter(M, k_real, color="black", s=stylia.MARKERSIZE, zorder=5)
         ax2.annotate(pname, (M, k_real), textcoords="offset points",
-                     xytext=(5, 3), fontsize=7.5, color="black")
-    ax2.set_xlabel("Number of models M", fontsize=11)
-    ax2.set_ylabel("k (tanh steepness)", fontsize=11)
-    ax2.set_title("M → k mapping", fontsize=12)
-    formula2 = r"$k(M) = 2\left(1 + 1.156\left(1-e^{-M/6.47}\right)\right)$"
-    ax2.text(0.97, 0.07, formula2, transform=ax2.transAxes, ha="right", va="bottom",
-             fontsize=10, bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.8))
-    ax2.grid(True, alpha=0.3)
+                     xytext=(5, 3), fontsize=9, color="black")
+    ax2.set_xlabel("Number of models M")
+    ax2.set_ylabel("k (tanh steepness)")
     ax2.set_xlim(2, 100)
+    stylia.label(ax2, title="M → k mapping")
+    formula2 = (
+        rf"$k(M) = 2\left(1 + {_TANH_A:.3f}"
+        rf"\left(1-e^{{-M/{_TANH_TAU:.2f}}}\right)\right)$"
+    )
+    ax2.text(0.97, 0.07, formula2, transform=ax2.transAxes, ha="right", va="bottom",
+             fontsize=11, bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.8))
 
-    plt.tight_layout()
     out_path = os.path.join(out_dir, "transform_scenarios.png")
-    plt.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close()
+    save_figure(out_path)
     print(f"  [plot] transform_scenarios -> {out_path}")
 
 

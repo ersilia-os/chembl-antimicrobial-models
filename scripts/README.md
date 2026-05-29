@@ -16,9 +16,15 @@ Individual general datasets are named `ORG_{activity_type}_{cutoff}` (e.g. `ORG_
 
 ---
 
-## 02_download_datasets_pubchem.py
+## 02a_download_datasets_pubchem.py
 
 Downloads the PubChem bioassay summary from the sibling `pubchem-antimicrobial-tasks` repo (default) or from the remote EOS service (`--eosvc`). Filters to organism-level assays only (excludes single-protein assays and discarded labels), then downloads the per-assay compound CSVs for all retained assays.
+
+---
+
+## 02b_plot_datasets.py
+
+Stacked horizontal bars of ChEMBL + PubChem dataset counts per pathogen alongside a scatter of active ratios per dataset and a per-pathogen breakdown of dataset types. PubChem rows labelled `discarded` are excluded. Output: `output/02_datasets/02_datasets.png`.
 
 ---
 
@@ -83,6 +89,18 @@ Prepares the final compound datasets for model training. Runs four stages in seq
 
 ---
 
+## 07b_quality_checks.py
+
+Per-dataset InChIKey-deduplication audit of the post-07 datasets. For each dataset, reports total rows, unparsable SMILES, unique compounds, duplicate compounds (and how many of those duplicate via more than one distinct SMILES string), label conflicts (same InChIKey carrying both `bin=0` and `bin=1`), and decoy/active collisions across other datasets of the same pathogen. Output: `output/07_datasets/07_dup_report.csv`.
+
+---
+
+## 07c_plot_datasets.py
+
+Three-panel figure built from the post-augmentation metadata: datasets per pathogen, per-dataset active ratio, and total decoys added per pathogen (log-scaled). Datasets that received decoys are drawn as hollow markers in the active-ratio scatter. Output: `output/07_datasets/07_datasets.png`.
+
+---
+
 ## 08_download_weights.py *(HPC only)*
 
 Downloads the LazyQSAR descriptor model weights needed by step 09. Run once from the login node before submitting the SLURM array job. Re-running is safe — each file is skipped if already present. Weights are saved to `output/08_weights/` and include chemeleon, cddd (encoder + FPSim index), and CLAMP.
@@ -97,13 +115,39 @@ Trains a LazyQSAR model for one dataset per SLURM array task. Each task reads `o
 
 ---
 
-## 10_aggregate_reports.py
+## 10a_aggregate_reports.py
 
 Reads all per-dataset CV reports from `output/09_reports/` and collapses them into `output/10_reports/`. Applies a hard filter: datasets with mean CV AUROC < 0.7 are excluded and recorded in `10_discarded_models.csv`. Retained datasets are written to `10_reports.csv` with one row per dataset.
 
 Beyond aggregated metrics (mean/std of AUROC, AUPRC, BEDROC), each dataset gets a composite quality weight from seven components: dataset type (individual > merged > general), decoy contamination fraction, mean CV AUROC, AUPRC enrichment over prevalence, BEDROC enrichment over random, total compound count, and active compound count. The `final_weight` is the mean of these seven scores; `final_normalized_weight` rescales within each pathogen so weights sum to 100 — this is used in downstream consensus scoring.
 
 **Threshold:** `MIN_AUROC = 0.7` (from `src/default.py`).
+
+---
+
+## 10b_training_results.py
+
+Per-pathogen three-panel figure: AUROC bars with cross-fold std error, out-of-fold rank-score distributions (jittered scatter + boxplot) for actives vs inactives with the `decision_cutoff_rank` overlaid, and final-weight bars. Decoy-augmented datasets render with a white bar face in the AUROC and weight panels. Accepts `--pathogen <code>` (single) or iterates all pathogens in `10_reports.csv`. Output: `output/10_reports/plots/10_training_{pathogen}.png`.
+
+---
+
+## 11_download_drugbank.py
+
+Downloads DrugBank SMILES from a public GitHub mirror, validates them with RDKit, drops inorganic molecules (no carbon) and entries above the molecular-weight cap, and writes a single canonical-SMILES column sorted alphabetically to `data/processed/11_drugbank_smiles.csv`.
+
+**Threshold:** `MW_CAP = 1000 Da`.
+
+---
+
+## 12a_predict_drugbank.py / 12a_predict_drugbank_local.py
+
+Predicts DrugBank ranks for each pathogen using the trained LazyQSAR models. `12a_predict_drugbank.py` is the cluster variant — it points LazyQSAR at the project `output/08_weights/` directory; `12a_predict_drugbank_local.py` uses the descriptor weights from a local LazyQSAR install. Both accept `--pathogen <code>` (single output) or `--all_pathogens` (one pass, then split per pathogen). Output: `output/12_drugbank/{pathogen}.csv` with `smiles` + one column per sub-model.
+
+---
+
+## 12b_fit_transformation.py
+
+For each pathogen, solves the tanh steepness `k*` such that the transformed consensus IQR matches the average per-model IQR, then fits a saturating-exponential meta-curve `k(M) = 2·(1 + a·(1 − e^{−M/τ}))` over the empirical `(M, k*)` points. The fitted `a` and `τ` are written to `output/12_drugbank/12b_tanh_fit.json` and consumed by script 14. A diagnostic figure and per-pathogen table are also written alongside.
 
 ---
 
@@ -131,6 +175,12 @@ Measures how well the consensus score (weighted and unweighted, from step 14) re
 
 ---
 
+## 16b_consensus_results.py
+
+Per-pathogen 12-panel consensus dashboard combining DrugBank rank distributions per sub-model (with `decision_cutoff_rank` lines), AUROC histograms from step 15, weighted/unweighted consensus scores ±tanh-transformed (from step 14, split into leave-one-out and global), RMSE importance per model, and consensus-with-vs-without AUROC scatter and histograms (from step 16). Accepts `--pathogen <code>` (single) or iterates all pathogens in `config/pathogens.csv`. Output: `output/16_recapitulate_consensus/plots/16_consensus_{pathogen}.png`.
+
+---
+
 ## 17_quality_checks.py
 
 Generates a data and model quality dashboard per pathogen. For each pathogen it produces four files under `output/17_quality_checks/{pathogen}/`: `all_smiles_no_decoys.csv` and `all_smiles_decoys.csv` (unique InChIKeys with label-conflict, decoy-duplication, and DrugBank-overlap flags), `data_summary.csv` (one row per dataset with compound counts and per-dataset conflict/DrugBank counts), and `model_summary.csv` (one row per model with AUROC, weight, and fold-stability flags, including discarded models). A top-level `summary.csv` with one row per pathogen is also written.
@@ -149,13 +199,3 @@ Packages both Ersilia Model Hub files for each pathogen in a single run. For eac
 Sub-model descriptions are built from assay type, activity type, measurement units, cutoff, number of source assays, and compound count.
 
 **Consensus threshold:** derived as `tanh_transform(weighted_avg(decision_cutoff_rank), k(N))`, where weights are `final_normalized_weight`, `k(N) = 2·(1 + TANH_A·(1−e^{−N/TANH_TAU}))`, and `N` is the number of sub-models. This formula reproduces the manually set threshold from prior builds exactly.
-
----
-
-## 19_euopenscreen_benchmark.sh
-
-Runs a trained Ersilia consensus model against the EU Open Screen compound library for a single pathogen. Accepts one argument (the pathogen slug, e.g. `abaumannii`) and resolves the corresponding Ersilia model ID from `ERSILIA_MODEL_IDS` in `src/default.py` at runtime.
-
-Downloads `data/processed/02_only_smiles.csv` from the sibling `eu-openscreen-antimicrobial-tasks` repo via `eosvc` on first run; subsequent runs reuse the cached file at `data/raw/euopenscreen/02_only_smiles.csv`. Output is written to `output/19_euopenscreen_benchmark/<pathogen>_euopenscreen_preds.csv`.
-
-Usage: `bash scripts/19_euopenscreen_benchmark.sh <pathogen>`
