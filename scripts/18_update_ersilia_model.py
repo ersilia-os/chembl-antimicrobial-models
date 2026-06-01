@@ -19,6 +19,7 @@ Outputs (all under output/18_emh_files/{pathogen}/):
   run_columns.csv
   consensus.py
   metadata.yml
+  install.yml
   run_output.csv
   DIFF_SUMMARY.txt
   COPY_INSTRUCTIONS.txt
@@ -64,6 +65,23 @@ _DESCRIPTORS  = ("chemeleon", "clamp", "cddd")
 _SOURCE_RANK  = {"chembl": 0, "pubchem": 1}
 _LABEL_RANK   = {"A": 0, "B": 1, "M": 2, "G": 3}
 _W_COLS       = ["w1", "w2", "w3", "w4", "w5", "w6", "w7"]
+
+# Pinned versions for the refreshed install.yml. ersilia-pack-utils version
+# matches what was shipped at initial incorporation (02_init_pathogen.py); the
+# lazyqsar bump from 3.3.0 -> 3.4.0 is the reason this refresh is being done.
+_ERSILIA_PACK_UTILS_VERSION = "0.1.5"
+_LAZYQSAR_VERSION           = "3.4.0"
+
+
+def render_install_yml(descriptors_needed):
+    only = ",".join(descriptors_needed)
+    return (
+        f'python: "3.12"\n'
+        f"commands:\n"
+        f'    - ["pip", "ersilia-pack-utils", "{_ERSILIA_PACK_UTILS_VERSION}"]\n'
+        f'    - ["pip", "lazyqsar", "{_LAZYQSAR_VERSION}"]\n'
+        f'    - "lazyqsar setup --descriptors --only {only}"\n'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -197,11 +215,11 @@ def consensus_threshold(cutoffs, w_quality, tanh_a, tanh_tau):
     w_eff = np.average(w_all, axis=-1, weights=np.ones(n_w))
     raw = (prob_ranks * w_eff).sum(axis=1) / w_eff.sum(axis=1)
     k = 2.0 * (1.0 + tanh_a * (1.0 - np.exp(-M / tanh_tau)))
-    return float(0.5 + 0.5 * np.tanh(k * (raw - 0.5)) / np.tanh(k / 2))
+    return float((0.5 + 0.5 * np.tanh(k * (raw - 0.5)) / np.tanh(k / 2)).item())
 
 
 # ---------------------------------------------------------------------------
-# Description builders (lifted from the previous scripts/18_emh_files.py)
+# Description builders
 # ---------------------------------------------------------------------------
 
 def _cutoff_str(cutoff, unit):
@@ -318,10 +336,12 @@ def patch_metadata(existing_yaml, n_models):
     if n_subs != 1:
         sys.exit("FAIL: no 'Output Dimension:' line found in metadata.yml.")
 
-    # Deployment — handle both flow style ([Local, Online]) and block style.
+    # Deployment — preserve block-style (matches the rest of the file); handle
+    # both the original two-line `- Local / - Online` and the already-updated
+    # single-line `- Local` form idempotently.
     new_yaml, n_subs = re.subn(
         r"^Deployment:.*?(?=\n[A-Z])",
-        "Deployment: [Local]",
+        "Deployment:\n  - Local",
         new_yaml,
         count=1,
         flags=re.MULTILINE | re.DOTALL,
@@ -447,14 +467,12 @@ def write_diff_summary(path, pathogen, eosXXXX, new_df, old_reports_csv,
 
     new_indexed = new_df.set_index("model_name")
     if old_indexed is not None and common:
-        lines.append("Per sub-model drift (decision_cutoff_rank, final_normalized_weight):")
-        lines.append(f"  {'model_name':40s}  {'cutoff_old':>10s} -> {'cutoff_new':>10s}   {'w_old':>7s} -> {'w_new':>7s}")
+        lines.append("Per sub-model decision_cutoff_rank drift:")
+        lines.append(f"  {'model_name':40s}  {'cutoff_old':>10s} -> {'cutoff_new':>10s}")
         for m in common:
             co = float(old_indexed.loc[m, "decision_cutoff_rank"])
             cn = float(new_indexed.loc[m, "decision_cutoff_rank"])
-            wo = float(old_indexed.loc[m, "final_normalized_weight"])
-            wn = float(new_indexed.loc[m, "final_normalized_weight"])
-            lines.append(f"  {m:40s}  {co:>10.4f} -> {cn:>10.4f}   {wo:>7.3f} -> {wn:>7.3f}")
+            lines.append(f"  {m:40s}  {co:>10.4f} -> {cn:>10.4f}")
         lines.append("")
 
     old_run_columns = os.path.join(repo_dir, "model", "framework", "columns", "run_columns.csv")
@@ -462,7 +480,7 @@ def write_diff_summary(path, pathogen, eosXXXX, new_df, old_reports_csv,
         with open(old_run_columns) as f:
             for line in f:
                 if line.startswith("consensus_score"):
-                    m = re.search(r"Recommended threshold:\s*([\d.]+)", line)
+                    m = re.search(r"Recommended threshold:\s*(\d+\.\d+)", line)
                     if m:
                         lines.append(f"Consensus threshold: {float(m.group(1)):.3f} (old)  ->  {new_threshold:.3f} (new)")
                     break
@@ -509,7 +527,10 @@ cp {rel_out}/consensus.py {rel_repo}/model/framework/code/consensus.py
 # 5. metadata.yml
 cp {rel_out}/metadata.yml {rel_repo}/metadata.yml
 
-# 6. run_output.csv
+# 6. install.yml (bumps lazyqsar to {_LAZYQSAR_VERSION})
+cp {rel_out}/install.yml {rel_repo}/install.yml
+
+# 7. run_output.csv
 cp {rel_out}/run_output.csv {rel_repo}/model/framework/examples/run_output.csv
 
 Then:
@@ -548,7 +569,7 @@ def main():
     out_dir = os.path.join(OUTPUT_DIR, pathogen)
     os.makedirs(out_dir, exist_ok=True)
 
-    print(f"[1/7] Load inputs")
+    print(f"[1/8] Load inputs")
     reports_df = pd.read_csv(REPORTS_PATH)
     meta_df    = pd.read_csv(METADATA_PATH)
     with open(TANH_FIT_PATH) as f:
@@ -556,7 +577,7 @@ def main():
     tanh_a, tanh_tau = float(fit["a"]), float(fit["tau"])
     print(f"      tanh fit: a={tanh_a:.4f}, tau={tanh_tau:.4f}")
 
-    print(f"[2/7] Filter + sort reports for {pathogen} ({eosXXXX})")
+    print(f"[2/8] Filter + sort reports for {pathogen} ({eosXXXX})")
     df = filter_and_sort(reports_df, meta_df, pathogen)
     sub_models = df["model_name"].tolist()
     print(f"      {len(sub_models)} sub-models kept: {sub_models}")
@@ -565,7 +586,7 @@ def main():
     reports_out = os.path.join(out_dir, "reports.csv")
     df.drop(columns=cols_to_drop).to_csv(reports_out, index=False)
 
-    print(f"[3/7] Build run_columns.csv (faithful threshold + per-assay descriptions)")
+    print(f"[3/8] Build run_columns.csv (faithful threshold + per-assay descriptions)")
     cutoffs   = [float(df.set_index("model_name").loc[m, "decision_cutoff_rank"]) for m in sub_models]
     w_quality = [df.set_index("model_name").loc[m, _W_COLS].values for m in sub_models]
     cons_thresh = round(consensus_threshold(cutoffs, w_quality, tanh_a, tanh_tau), 3)
@@ -598,7 +619,7 @@ def main():
         run_columns_out, index=False
     )
 
-    print(f"[4/7] Emit consensus.py (canonical template)")
+    print(f"[4/8] Emit consensus.py (canonical template)")
     consensus_out = os.path.join(out_dir, "consensus.py")
     # Bake the JSON-fitted (a, tau) into the shipped template so the production
     # transform matches the recommended threshold (both derive from 12b_tanh_fit.json).
@@ -612,7 +633,7 @@ def main():
     with open(consensus_out, "w") as f:
         f.write(consensus_src)
 
-    print(f"[5/7] Patch metadata.yml")
+    print(f"[5/8] Patch metadata.yml")
     metadata_src = os.path.join(repo_dir, "metadata.yml")
     if not os.path.exists(metadata_src):
         sys.exit(f"FAIL: {metadata_src} not found.")
@@ -622,7 +643,14 @@ def main():
     with open(metadata_out, "w") as f:
         f.write(new_yaml)
 
-    print(f"[6/7] Run model in staging dir to generate run_output.csv")
+    print(f"[6/8] Emit install.yml (lazyqsar=={_LAZYQSAR_VERSION})")
+    new_descriptors = descriptors_in_dir(os.path.join(MODELS_DIR, pathogen), sub_models)
+    install_out = os.path.join(out_dir, "install.yml")
+    with open(install_out, "w") as f:
+        f.write(render_install_yml(new_descriptors))
+    print(f"      descriptors: {new_descriptors}")
+
+    print(f"[7/8] Run model in staging dir to generate run_output.csv")
     run_output_out = os.path.join(out_dir, "run_output.csv")
     generate_run_output(
         repo_dir=repo_dir,
@@ -644,8 +672,7 @@ def main():
         sys.exit(f"FAIL: run_output values out of [0,1]: min={vmin} max={vmax}")
     print(f"      {len(rout)} rows x {len(rout.columns)} columns, all in [0,1].")
 
-    print(f"[7/7] Write DIFF_SUMMARY.txt + COPY_INSTRUCTIONS.txt")
-    new_descriptors = descriptors_in_dir(os.path.join(MODELS_DIR, pathogen), sub_models)
+    print(f"[8/8] Write DIFF_SUMMARY.txt + COPY_INSTRUCTIONS.txt")
     diff_text = write_diff_summary(
         path=os.path.join(out_dir, "DIFF_SUMMARY.txt"),
         pathogen=pathogen,

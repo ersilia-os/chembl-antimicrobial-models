@@ -81,7 +81,7 @@ See [scripts/README.md](scripts/README.md) for a description of each step.
 | 16  | `scripts/16_recapitulate_consensus.py` |
 | 16b | `scripts/16b_consensus_results.py` |
 | 17  | `scripts/17_quality_checks.py` |
-| 18  | `scripts/18_emh_files.py` |
+| 18  | `scripts/18_update_ersilia_model.py` |
 
 ## Repository structure
 
