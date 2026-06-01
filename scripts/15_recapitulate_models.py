@@ -69,7 +69,15 @@ def run(pathogen: str, in_dir: str, out_dir: str) -> None:
         print(f"  [SKIP] {pathogen}: {len(model_cols)} model(s) — pairwise requires at least 2")
         return
 
-    scores = {m: df[m].fillna(0.0).values for m in model_cols}
+    nan_counts = df[model_cols].isna().sum()
+    if nan_counts.any():
+        bad = nan_counts[nan_counts > 0].to_dict()
+        raise ValueError(
+            f"[{pathogen}] NaN predictions in step-12 output: {bad}. "
+            "Decide how to handle these (drop / impute / exclude pairwise) before scoring."
+        )
+
+    scores = {m: df[m].values for m in model_cols}
 
     rows = []
     for m_a in model_cols:

@@ -143,8 +143,7 @@ def _plot(points, a_hat, tau_hat):
     Ms = points["M"].to_numpy(float)
     ks = points["k_star"].to_numpy(float)
     M_cont = np.linspace(max(2, Ms.min()), max(100.0, Ms.max()), 400)
-    ax.plot(M_cont, _k_model(M_cont, a_hat, tau_hat), color="steelblue", lw=2.5,
-            label="k(M) fit")
+    ax.plot(M_cont, _k_model(M_cont, a_hat, tau_hat), lw=2.5, label="k(M) fit")
     ax.scatter(Ms, ks, color="black", s=40, zorder=5, label=r"empirical $k^*$")
     for _, row in points.iterrows():
         ax.annotate(row["pathogen"], (row["M"], row["k_star"]),
@@ -175,7 +174,14 @@ def main():
         model_cols = [c for c in df12.columns if c != "smiles" and c in pre.index]
         if len(model_cols) < 2:
             continue
-        prob_ranks    = df12[model_cols].fillna(0.0).values
+        nan_counts = df12[model_cols].isna().sum()
+        if nan_counts.any():
+            bad = nan_counts[nan_counts > 0].to_dict()
+            raise ValueError(
+                f"[{pathogen}] NaN predictions in step-12 output: {bad}. "
+                "Decide how to handle these (drop / impute / exclude pairwise) before scoring."
+            )
+        prob_ranks    = df12[model_cols].values
         w_quality     = np.array([pre.loc[m, W_COLS].values for m in model_cols], dtype=float)
         cutoffs       = np.array([pre.loc[m, "decision_cutoff_rank"] for m in model_cols], dtype=float)
         consensus     = _score(prob_ranks, w_quality, cutoffs)

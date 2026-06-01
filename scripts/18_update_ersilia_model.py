@@ -90,7 +90,7 @@ import numpy as np
 import pandas as pd
 
 _W_COLS = ["w1", "w2", "w3", "w4", "w5", "w6", "w7"]
-_TANH_A, _TANH_TAU = 1.156, 6.47
+_TANH_A, _TANH_TAU = __TANH_A__, __TANH_TAU__
 
 
 def compute_consensus(R, cols_ordered, model_names, checkpoints_dir):
@@ -147,7 +147,7 @@ def compute_consensus(R, cols_ordered, model_names, checkpoints_dir):
 # ---------------------------------------------------------------------------
 
 def filter_and_sort(reports_df, meta_df, pathogen):
-    """Drop sub-models with auroc_mean <= MIN_AUROC; sort by (source, label, n_compounds desc)."""
+    """Drop sub-models with auroc_mean < MIN_AUROC; sort by (source, label, n_compounds desc)."""
     df = reports_df[reports_df["pathogen"] == pathogen].copy()
     if df.empty:
         sys.exit(f"No rows in 10_reports.csv for pathogen '{pathogen}'.")
@@ -161,9 +161,9 @@ def filter_and_sort(reports_df, meta_df, pathogen):
             f"{missing['model_name'].tolist()}"
         )
 
-    df = df[df["auroc_mean"] > MIN_AUROC].copy()
+    df = df[df["auroc_mean"] >= MIN_AUROC].copy()
     if df.empty:
-        sys.exit(f"All sub-models for {pathogen} fall below AUROC>{MIN_AUROC}.")
+        sys.exit(f"All sub-models for {pathogen} fall below AUROC>={MIN_AUROC}.")
 
     df["_src"] = df["source"].map(_SOURCE_RANK)
     df["_lbl"] = df["label"].map(_LABEL_RANK)
@@ -600,8 +600,17 @@ def main():
 
     print(f"[4/7] Emit consensus.py (canonical template)")
     consensus_out = os.path.join(out_dir, "consensus.py")
+    # Bake the JSON-fitted (a, tau) into the shipped template so the production
+    # transform matches the recommended threshold (both derive from 12b_tanh_fit.json).
+    consensus_src = (
+        CONSENSUS_PY
+        .replace("__TANH_A__", repr(tanh_a))
+        .replace("__TANH_TAU__", repr(tanh_tau))
+    )
+    if "__TANH_A__" in consensus_src or "__TANH_TAU__" in consensus_src:
+        sys.exit("FAIL: tanh placeholders not substituted in consensus.py template.")
     with open(consensus_out, "w") as f:
-        f.write(CONSENSUS_PY)
+        f.write(consensus_src)
 
     print(f"[5/7] Patch metadata.yml")
     metadata_src = os.path.join(repo_dir, "metadata.yml")

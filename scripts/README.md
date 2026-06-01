@@ -198,4 +198,4 @@ Packages both Ersilia Model Hub files for each pathogen in a single run. For eac
 
 Sub-model descriptions are built from assay type, activity type, measurement units, cutoff, number of source assays, and compound count.
 
-**Consensus threshold:** derived as `tanh_transform(weighted_avg(decision_cutoff_rank), k(N))`, where weights are `final_normalized_weight`, `k(N) = 2·(1 + TANH_A·(1−e^{−N/TANH_TAU}))`, and `N` is the number of sub-models. This formula reproduces the manually set threshold from prior builds exactly.
+**Consensus threshold:** derived as `tanh_transform(weighted_avg(decision_cutoff_rank), k(N))`, where weights are `final_normalized_weight`, `k(N) = 2·(1 + a·(1−e^{−N/τ}))`, and `N` is the number of sub-models. The `(a, τ)` are the fit produced by script 12b and read from `output/12_drugbank/12b_tanh_fit.json` — the same source as the production transform in `consensus.py` (script 18) and the scoring in script 14, so the recommended threshold and the applied transform always agree.

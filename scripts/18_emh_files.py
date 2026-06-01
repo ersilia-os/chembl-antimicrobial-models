@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import sys
 
@@ -25,12 +26,19 @@ import pandas as pd
 
 root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(root, "..", "src"))
-from default import TANH_A, TANH_TAU
 
 REPO_ROOT     = os.path.abspath(os.path.join(root, ".."))
 REPORTS_PATH  = os.path.join(REPO_ROOT, "output", "10_reports", "10_reports.csv")
 METADATA_PATH = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
 OUTPUT_DIR    = os.path.join(REPO_ROOT, "output", "18_emh_files")
+
+# Tanh (a, tau) ground truth: the fit produced by scripts/12b_fit_transformation.py
+# (same source as scripts/14_consensus_scoring.py). Loaded once at import.
+_TANH_FIT_PATH = os.path.join(REPO_ROOT, "output", "12_drugbank", "12b_tanh_fit.json")
+with open(_TANH_FIT_PATH) as _fh:
+    _fit = json.load(_fh)
+TANH_A   = float(_fit["a"])
+TANH_TAU = float(_fit["tau"])
 
 _DROP_COLS = ["predict_rank_actives", "predict_rank_inactives"]
 

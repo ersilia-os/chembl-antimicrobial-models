@@ -58,10 +58,6 @@ MIN_AUROC = 0.7  # minimum mean CV AUROC to retain a model in the pipeline
 # DrugBank filtering
 MW_CAP = 1000.0
 
-# Consensus scoring — tanh fit parameters (IQR-shrinking sigmoid)
-TANH_A = 1.156
-TANH_TAU = 6.47
-
 # Recapitulation thresholds
 THRESHOLDS = [0.001, 0.01, 0.05]
 THRESHOLD_SFXS = ["0.1pct", "1pct", "5pct"]
