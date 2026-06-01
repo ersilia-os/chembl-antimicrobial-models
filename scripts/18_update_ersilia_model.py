@@ -349,17 +349,18 @@ def patch_metadata(existing_yaml, n_models):
     if n_subs != 1:
         sys.exit("FAIL: no 'Deployment:' line found in metadata.yml.")
 
-    # Interpretation
+    # Interpretation — match the whole block (the original may be wrapped across
+    # multiple indented continuation lines, which YAML treats as a folded scalar).
     new_interp = (
         f"Interpretation: Probability of antimicrobial activity against {short_name} "
         f"from {n_models} ChEMBL-trained sub-models, plus a quality-weighted consensus score."
     )
     new_yaml, n_subs = re.subn(
-        r"^Interpretation:.*$",
+        r"^Interpretation:.*?(?=\n[A-Z])",
         new_interp,
         new_yaml,
         count=1,
-        flags=re.MULTILINE,
+        flags=re.MULTILINE | re.DOTALL,
     )
     if n_subs != 1:
         sys.exit("FAIL: no 'Interpretation:' line found in metadata.yml.")
