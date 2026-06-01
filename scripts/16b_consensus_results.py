@@ -19,7 +19,7 @@ Inputs (per pathogen):
   - output/12_drugbank/{pathogen}.csv
   - output/14_consensus/{pathogen}.csv (+ _unweighted, _transformed, _unweighted_transformed)
   - output/15_recapitulate_models/{pathogen}.csv
-  - output/16_recapitulate_consensus/{pathogen}_weighted.csv (+ _unweighted, _exc_weighted, _exc_unweighted)
+  - output/16_recapitulate_consensus/{pathogen}_weighted_transformed.csv (+ _unweighted_transformed, _exc_weighted_transformed, _exc_unweighted_transformed)
   - output/10_reports/10_reports.csv  (for decision_cutoff_rank)
 
 Output:
@@ -148,10 +148,10 @@ def plot_pathogen(pathogen, pathogen_name, reports, pal, rng):
     df14_w_t    = pd.read_csv(os.path.join(CONSENSUS_DIR, f"{pathogen}_transformed.csv"))
     df14_uw_t   = pd.read_csv(os.path.join(CONSENSUS_DIR, f"{pathogen}_unweighted_transformed.csv"))
     df_recap_m  = pd.read_csv(os.path.join(RECAP_M_DIR,   f"{pathogen}.csv"))
-    df_rec_inc  = pd.read_csv(os.path.join(RECAP_C_DIR,   f"{pathogen}_weighted.csv"))
-    df_rec_iuw  = pd.read_csv(os.path.join(RECAP_C_DIR,   f"{pathogen}_unweighted.csv"))
-    df_rec_exc  = pd.read_csv(os.path.join(RECAP_C_DIR,   f"{pathogen}_exc_weighted.csv"))
-    df_rec_euw  = pd.read_csv(os.path.join(RECAP_C_DIR,   f"{pathogen}_exc_unweighted.csv"))
+    df_rec_inc  = pd.read_csv(os.path.join(RECAP_C_DIR,   f"{pathogen}_weighted_transformed.csv"))
+    df_rec_iuw  = pd.read_csv(os.path.join(RECAP_C_DIR,   f"{pathogen}_unweighted_transformed.csv"))
+    df_rec_exc  = pd.read_csv(os.path.join(RECAP_C_DIR,   f"{pathogen}_exc_weighted_transformed.csv"))
+    df_rec_euw  = pd.read_csv(os.path.join(RECAP_C_DIR,   f"{pathogen}_exc_unweighted_transformed.csv"))
 
     model_cols = [c for c in df12.columns if c != "smiles"]
     report_p   = reports[reports["pathogen"] == pathogen].set_index("model_name")
@@ -162,7 +162,7 @@ def plot_pathogen(pathogen, pathogen_name, reports, pal, rng):
     stylia.set_style("article")
     pal = CategoricalPalette("npg")
 
-    fig, axs = stylia.create_figure(6, 2, width=0.8, height=1)
+    fig, axs = stylia.create_figure(6, 2, width=1.3, height=1)
     fig.suptitle(
         f"{pathogen_name} models ({N}) vs.\nDrugBank compounds ({len(df12)} compounds)",
         fontsize=9, y=0.99,
@@ -196,21 +196,21 @@ def plot_pathogen(pathogen, pathogen_name, reports, pal, rng):
 
     NC = len([c for c in df14_w.columns if c.startswith("excluded_")]) + 1
 
-    # [6] RMSE importance (weighted)
+    # [6] RMSE (weighted)
     ax = axs.next()
     imp_w = _model_importance(df14_w, model_cols)
     ax.bar(range(NC), imp_w, color=pal.get(8)[3], width=0.6)
-    ax.set_ylabel("RMSE importance\nweighted")
+    ax.set_ylabel("RMSE\nweighted")
     ax.set_xlim([-0.7, NC - 0.3])
     ax.set_xticks(range(NC))
     ax.set_xticklabels(list(range(NC - 1)) + ["G."], rotation=0, size=6)
     ax.set_xlabel(None)
 
-    # [7] RMSE importance (unweighted)
+    # [7] RMSE (unweighted)
     ax = axs.next()
     imp_uw = _model_importance(df14_uw, model_cols)
     ax.bar(range(NC), imp_uw, color=pal.get(8)[3], width=0.6)
-    ax.set_ylabel("RMSE importance\nunweighted")
+    ax.set_ylabel("RMSE\nunweighted")
     ax.set_xlim([-0.7, NC - 0.3])
     ax.set_xticks(range(NC))
     ax.set_xticklabels(list(range(NC - 1)) + ["G."], rotation=0, size=6)

@@ -74,7 +74,7 @@ def plot_pathogen(report_pathogen: pd.DataFrame, pathogen: str, pathogen_name: s
     ax.set_xticks(x)
     ax.set_xticklabels([""] * n)
     ax.set_ylabel("AUROC")
-    ax.set_ylim([0.85, 1.01])
+    ax.set_ylim([0.70, 1.01])
     ax.set_xlim([-0.7, n - 0.3])
     aurocs_mean = report_pathogen["auroc_mean"].tolist()
     aurocs_std  = report_pathogen["auroc_std"].tolist()

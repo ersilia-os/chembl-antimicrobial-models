@@ -5,16 +5,24 @@ For each model, measures how well the consensus (weighted and unweighted from
 step 14) recapitulates that model's individual rankings — both when the model
 is excluded from the consensus and when it is included.
 
+By default the tanh-transformed consensus from step 14 is used (the values
+end-users actually see). Pass --untransformed to use the raw consensus instead.
+Since the metrics are rank-based (spearman, hit_overlap, auroc), only pearson
+differs between the two; it is the only metric the transform affects.
+
 Inputs:
   output/12_drugbank/{pathogen}.csv         — prob_ranks per model
-  output/14_consensus/{pathogen}.csv        — weighted consensus
-  output/14_consensus/{pathogen}_unweighted.csv
+  output/14_consensus/{pathogen}_transformed.csv            (default)
+  output/14_consensus/{pathogen}_unweighted_transformed.csv (default)
+  output/14_consensus/{pathogen}.csv            (--untransformed)
+  output/14_consensus/{pathogen}_unweighted.csv (--untransformed)
 
-Outputs per pathogen in output/16_recapitulate_consensus/:
-  {pathogen}_exc_weighted.csv    — model vs leave-one-out weighted consensus
-  {pathogen}_exc_unweighted.csv  — model vs leave-one-out unweighted consensus
-  {pathogen}_weighted.csv        — model vs full weighted consensus
-  {pathogen}_unweighted.csv      — model vs full unweighted consensus
+Outputs per pathogen in output/16_recapitulate_consensus/ (default adds a
+_transformed suffix so the two variants do not overwrite each other):
+  {pathogen}_exc_weighted[_transformed].csv    — model vs LOO weighted consensus
+  {pathogen}_exc_unweighted[_transformed].csv  — model vs LOO unweighted consensus
+  {pathogen}_weighted[_transformed].csv        — model vs full weighted consensus
+  {pathogen}_unweighted[_transformed].csv      — model vs full unweighted consensus
 
 Each file: model | spearman | pearson |
            hit_overlap_10 | hit_overlap_100 | hit_overlap_500 |
@@ -23,6 +31,7 @@ Each file: model | spearman | pearson |
 Usage:
     python scripts/16_recapitulate_consensus.py
     python scripts/16_recapitulate_consensus.py --pathogen ecoli
+    python scripts/16_recapitulate_consensus.py --untransformed
 """
 
 import argparse
@@ -87,10 +96,12 @@ def _compute_rows(model_cols: list, model_scores: dict, consensus_scores: dict) 
     return rows
 
 
-def run(pathogen: str, in_dir_12: str, in_dir_14: str, out_dir: str) -> None:
+def run(pathogen: str, in_dir_12: str, in_dir_14: str, out_dir: str,
+        transformed: bool = True) -> None:
+    sfx        = "_transformed" if transformed else ""
     src12      = os.path.join(in_dir_12, f"{pathogen}.csv")
-    src14_w    = os.path.join(in_dir_14, f"{pathogen}.csv")
-    src14_uw   = os.path.join(in_dir_14, f"{pathogen}_unweighted.csv")
+    src14_w    = os.path.join(in_dir_14, f"{pathogen}{sfx}.csv")
+    src14_uw   = os.path.join(in_dir_14, f"{pathogen}_unweighted{sfx}.csv")
 
     for src in (src12, src14_w, src14_uw):
         if not os.path.isfile(src):
@@ -104,7 +115,15 @@ def run(pathogen: str, in_dir_12: str, in_dir_14: str, out_dir: str) -> None:
         print(f"  [SKIP] {pathogen}: {len(model_cols)} model(s) — requires at least 2")
         return
 
-    model_scores = {m: df12[m].fillna(0.0).values for m in model_cols}
+    nan_counts = df12[model_cols].isna().sum()
+    if nan_counts.any():
+        bad = nan_counts[nan_counts > 0].to_dict()
+        raise ValueError(
+            f"[{pathogen}] NaN predictions in step-12 output: {bad}. "
+            "Decide how to handle these (drop / impute / exclude pairwise) before scoring."
+        )
+
+    model_scores = {m: df12[m].values for m in model_cols}
 
     df14_w  = pd.read_csv(src14_w)
     df14_uw = pd.read_csv(src14_uw)
@@ -118,10 +137,10 @@ def run(pathogen: str, in_dir_12: str, in_dir_14: str, out_dir: str) -> None:
     os.makedirs(out_dir, exist_ok=True)
 
     outputs = [
-        (f"{pathogen}_exc_weighted.csv",   exc_weighted),
-        (f"{pathogen}_exc_unweighted.csv", exc_unweighted),
-        (f"{pathogen}_weighted.csv",       inc_weighted),
-        (f"{pathogen}_unweighted.csv",     inc_unweighted),
+        (f"{pathogen}_exc_weighted{sfx}.csv",   exc_weighted),
+        (f"{pathogen}_exc_unweighted{sfx}.csv", exc_unweighted),
+        (f"{pathogen}_weighted{sfx}.csv",       inc_weighted),
+        (f"{pathogen}_unweighted{sfx}.csv",     inc_unweighted),
     ]
 
     for filename, consensus_scores in outputs:
@@ -137,13 +156,16 @@ def main() -> None:
     parser.add_argument("--input_dir_12",  default=DEFAULT_IN_DIR_12)
     parser.add_argument("--input_dir_14",  default=DEFAULT_IN_DIR_14)
     parser.add_argument("--output_dir",    default=DEFAULT_OUT_DIR)
+    parser.add_argument("--untransformed", action="store_true",
+                        help="Use the raw step-14 consensus instead of the tanh-transformed one.")
     args = parser.parse_args()
 
     reports_df = pd.read_csv(REPORTS_PATH)
     pathogens  = [args.pathogen] if args.pathogen else list(dict.fromkeys(reports_df["pathogen"]))
 
     for pathogen in pathogens:
-        run(pathogen, args.input_dir_12, args.input_dir_14, args.output_dir)
+        run(pathogen, args.input_dir_12, args.input_dir_14, args.output_dir,
+            transformed=not args.untransformed)
 
 
 if __name__ == "__main__":
