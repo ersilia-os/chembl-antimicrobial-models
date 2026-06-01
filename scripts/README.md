@@ -205,3 +205,16 @@ Refreshes an already-incorporated Ersilia Hub model with newly trained checkpoin
 Requires `--pathogen <p>` and `--repo-dir <path-to-clone>`. After the script, the user (with Claude) reviews `DIFF_SUMMARY.txt`, runs the copy commands, `git diff` reviews, and pushes direct to `main` on `ersilia-os/{eosXXXX}` (no PR).
 
 **Consensus threshold (faithful):** computed by applying `consensus.py`'s W1-W7+W8 formula to the per-sub-model `decision_cutoff_rank` values (W8 = 0 at the boundary by construction), then the tanh transform with `(a, τ)` from `output/12_drugbank/12b_tanh_fit.json`. Same `(a, τ)` baked into the shipped `consensus.py`, so the recommended threshold and the production transform always agree.
+
+---
+
+## 19_apply_and_fetch.py
+
+Applies the refresh package produced by `18_update_ersilia_model.py` to a local clone, then runs `ersilia fetch --from_dir` on it as a structural verification. Per pathogen:
+
+1. `rsync -a --delete` checkpoints from `output/09_models/{pathogen}/` into `{repo-dir}/model/checkpoints/models/`.
+2. Copies the 6 generated artifacts (`reports.csv`, `run_columns.csv`, `consensus.py`, `metadata.yml`, `install.yml`, `run_output.csv`) from `output/18_emh_files/{pathogen}/` into the right paths under `{repo-dir}/`.
+3. `ersilia delete {eosXXXX}` — clears any cached install.
+4. `ersilia fetch {eosXXXX} --from_dir {repo-dir}` — validates `metadata.yml` schema, runs `install.yml` end-to-end, and executes `run.sh` once. Fails loud on non-zero exit.
+
+Requires `--pathogen <p>` and `--repo-dir <path-to-clone>`. After this, the user (with Claude) reviews `cd {repo-dir} && git diff`, commits, and pushes direct to `main` on `ersilia-os/{eosXXXX}`.
