@@ -32,6 +32,7 @@ Usage:
 
 import argparse
 import os
+import sys
 
 import matplotlib.patches as mpatches
 import numpy as np
@@ -41,6 +42,9 @@ from stylia import CategoricalPalette, save_figure
 
 
 root = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(root, "..", "src"))
+
+from default import RANDOM_SEED
 
 REPORTS_PATH  = os.path.join(root, "..", "output", "10_reports", "10_reports.csv")
 DRUGBANK_DIR  = os.path.join(root, "..", "output", "12_drugbank")
@@ -50,8 +54,6 @@ RECAP_C_DIR   = os.path.join(root, "..", "output", "16_recapitulate_consensus")
 PATHOGENS     = os.path.join(root, "..", "config", "pathogens.csv")
 OUT_DIR       = os.path.join(root, "..", "output", "16_recapitulate_consensus", "plots")
 os.makedirs(OUT_DIR, exist_ok=True)
-
-RANDOM_SEED = 42
 
 AUROC_COLS   = ["auroc_0.1pct", "auroc_1pct", "auroc_5pct"]
 AUROC_LABELS = ["0.1%", "1%", "5%"]
