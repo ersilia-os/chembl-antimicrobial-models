@@ -308,12 +308,18 @@ def descriptors_in_dir(parent, sub_models):
 # metadata.yml patcher
 # ---------------------------------------------------------------------------
 
+# Captures the pathogen short name from the existing Interpretation line. The
+# anchor is the literal "ChEMBL" that always appears after "from" — but the
+# words between "from" and "ChEMBL" vary across pathogens ("7", "32",
+# "a single", "five", etc.), so we match them greedily-lazily. DOTALL is
+# required because campylobacter's interpretation wraps after the short name.
 _SHORT_NAME_RE = re.compile(
-    r"Probability of antimicrobial activity against\s+(.+?)\s+from\s+\S+\s+ChEMBL-trained"
+    r"Probability of antimicrobial activity against\s+(.+?)\s+from\s+.+?ChEMBL",
+    flags=re.DOTALL,
 )
 
 
-def patch_metadata(existing_yaml, n_models):
+def patch_metadata(existing_yaml, n_models, has_pubchem):
     """Patch Output Dimension, Deployment, and Interpretation. Everything else is preserved
     byte-for-byte. The file uses flow-style lists so single-line regex replacements are safe.
     """
@@ -323,7 +329,10 @@ def patch_metadata(existing_yaml, n_models):
             "FAIL: could not parse the short pathogen name from the existing metadata.yml's "
             "Interpretation line. Expected '... against <X> from N ChEMBL-trained sub-models ...'."
         )
-    short_name = short_name_match.group(1).strip()
+    # Normalize whitespace — the published file may wrap the short name across
+    # lines as a YAML folded scalar (e.g. "Enterococcus\n  faecium"), and we
+    # need a single-line short name to splice into the new Interpretation.
+    short_name = re.sub(r"\s+", " ", short_name_match.group(1)).strip()
 
     # Output Dimension
     new_yaml, n_subs = re.subn(
@@ -353,7 +362,7 @@ def patch_metadata(existing_yaml, n_models):
     # multiple indented continuation lines, which YAML treats as a folded scalar).
     new_interp = (
         f"Interpretation: Probability of antimicrobial activity against {short_name} "
-        f"from {n_models} ChEMBL-trained sub-models, plus a quality-weighted consensus score."
+        f"from {n_models} {'ChEMBL- and PubChem' if has_pubchem else 'ChEMBL'}-trained sub-models, plus a quality-weighted consensus score."
     )
     new_yaml, n_subs = re.subn(
         r"^Interpretation:.*?(?=\n[A-Z])",
@@ -635,11 +644,16 @@ def main():
         f.write(consensus_src)
 
     print(f"[5/8] Patch metadata.yml")
+    kept_sources = set(
+        meta_df[(meta_df["pathogen"] == pathogen) & (meta_df["name"].isin(df["name"]))]["source"]
+    )
+    has_pubchem = "pubchem" in kept_sources
+    print(f"      sources in kept sub-models: {sorted(kept_sources)}")
     metadata_src = os.path.join(repo_dir, "metadata.yml")
     if not os.path.exists(metadata_src):
         sys.exit(f"FAIL: {metadata_src} not found.")
     with open(metadata_src) as f:
-        new_yaml = patch_metadata(f.read(), len(sub_models))
+        new_yaml = patch_metadata(f.read(), len(sub_models), has_pubchem)
     metadata_out = os.path.join(out_dir, "metadata.yml")
     with open(metadata_out, "w") as f:
         f.write(new_yaml)
