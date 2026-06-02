@@ -346,7 +346,7 @@ def augment_datasets(
 
         n_pos = int((df["bin"] == 1).sum())
         n_total = len(df)
-        n_needed = 10 * n_pos - n_total
+        n_needed = int(n_pos / TARGET_RATIO) - n_total
 
         pathogen_active_iks = pathogen_actives.get(row["pathogen"], set())
         pool = list({
