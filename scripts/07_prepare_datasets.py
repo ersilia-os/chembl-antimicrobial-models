@@ -275,6 +275,9 @@ def extract_datasets(metadata: pd.DataFrame) -> None:
         out_path = os.path.join(OUT_DIR, row["pathogen"], f"{row['name']}.csv")
         os.makedirs(os.path.dirname(out_path), exist_ok=True)
 
+        if os.path.exists(out_path):
+            continue
+
         if row["source"] == "chembl":
             df = _extract_chembl(row)
         else:
@@ -349,7 +352,10 @@ def augment_datasets(
         n_needed = int(n_pos / TARGET_RATIO) - n_total
 
         pathogen_active_iks = pathogen_actives.get(row["pathogen"], set())
-        pool = list({
+        # sorted() — set iteration order depends on PYTHONHASHSEED, so without
+        # this the pre-shuffle order varies across runs and the seeded shuffle
+        # ends up non-reproducible.
+        pool = sorted({
             decoy_smi
             for active_smi in df.loc[df["bin"] == 1, "smiles"]
             for active_ik in [smiles_to_inchikey(active_smi)[1]]
