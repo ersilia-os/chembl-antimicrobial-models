@@ -154,7 +154,7 @@ Downloads DrugBank SMILES from a public GitHub mirror, validates them with RDKit
 
 ## 12a_predict_drugbank.py
 
-Predicts DrugBank scores for each pathogen using the trained LazyQSAR models, across every predict type in `PREDICT_TYPES` (`rank`, `proba`, `score`, `logit`, `lift`, `binary`), run in series. Points LazyQSAR at the project `output/08_weights/` directory (via a `HOME` override). Accepts `--pathogen <code>` (single output) or `--all_pathogens` (one pass per type, then split per pathogen). Output: `rank` stays at `output/12_drugbank/{pathogen}.csv`; each other type writes to `output/12_drugbank/{type}/{pathogen}.csv`, with `smiles` + one column per sub-model.
+Predicts DrugBank scores for each pathogen using the trained LazyQSAR models, across every predict type in `PREDICT_TYPES` (`rank`, `proba`, `score`, `logit`, `lift`, `binary`), run in series. Points LazyQSAR at the project `output/08_weights/` directory (via a `HOME` override). Accepts `--pathogen <code>` (single output) or `--all_pathogens` (one pass per type, then split per pathogen). Output: every type (incl. `rank`) writes to `output/12_drugbank/{type}/{pathogen}.csv`, with `smiles` + one column per sub-model.
 
 **Descriptor note:** the lazy-qsar multi-model `predict()` API computes descriptors once per featurizer *within* a call but discards them afterwards, so descriptors are recomputed once per predict type (N types ⇒ N× descriptor cost). The `_ensemble_cache` from lazy-qsar issue #26 is a separate single-model code path not used here.
 

@@ -5,9 +5,8 @@ Uses the lazy-qsar multi-model predict() API so that, within a single call,
 descriptors are computed once per featurizer type and shared across all models,
 rather than recomputing them for each model independently.
 
-Runs every predict type in PREDICT_TYPES in series. "rank" keeps the original
-top-level layout (output/12_drugbank/{pathogen}.csv); each other type writes to
-its own subdirectory (output/12_drugbank/{type}/{pathogen}.csv).
+Runs every predict type in PREDICT_TYPES in series. Each type writes to its own
+subdirectory: output/12_drugbank/{type}/{pathogen}.csv.
 
 NOTE: the multi-model predict() API rebuilds (and deletes) a scratch descriptor
 matrix on every call, so descriptors ARE recomputed once per predict type. The
@@ -36,10 +35,9 @@ import pandas as pd
 
 from lazyqsar.api.classifier_predict import predict as lqsar_predict
 
-# Predict types to produce, in run order. "rank" stays at the top level; the
-# rest each get their own subdirectory under OUT_DIR.
+# Predict types to produce, in run order. Each writes to its own subdirectory
+# under OUT_DIR: {OUT_DIR}/{type}/{pathogen}.csv.
 PREDICT_TYPES = ["rank", "proba", "score", "logit", "lift", "binary"]
-RANK_TYPE = "rank"
 
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
@@ -164,31 +162,26 @@ def main() -> None:
                        help="Run all pathogens in metadata order")
     parser.add_argument("--drugbank",   default=DRUGBANK_PATH, help="DrugBank SMILES CSV")
     parser.add_argument("--models_dir", default=MODELS_DIR,    help="Base directory for trained models")
-    parser.add_argument("--output",     default=None,
-                        help="Output CSV path (--pathogen mode only)")
+    parser.add_argument("--output_dir", default=None,
+                        help="Base output directory (default output/12_drugbank); "
+                             "each type writes to {output_dir}/{type}/{pathogen}.csv")
     args = parser.parse_args()
 
     n_compounds = len(pd.read_csv(args.drugbank))
     print(f"DrugBank: {n_compounds} compounds")
     print(f"Predict types: {PREDICT_TYPES}  (descriptors recomputed per type)")
 
-    # Base directory for the rank output; subdir outputs derive from it.
-    rank_base = os.path.dirname(os.path.abspath(
-        args.output or os.path.join(OUT_DIR, "x.csv")
-    )) if not args.all_pathogens else OUT_DIR
+    base_dir = args.output_dir or OUT_DIR
 
     t0 = time.time()
     n_models = 0
     for predict_type in PREDICT_TYPES:
+        out_dir = os.path.join(base_dir, predict_type)
+        os.makedirs(out_dir, exist_ok=True)
         if args.all_pathogens:
-            out_dir = OUT_DIR if predict_type == RANK_TYPE else os.path.join(OUT_DIR, predict_type)
-            os.makedirs(out_dir, exist_ok=True)
             n_models = run_all_pathogens(args.drugbank, args.models_dir, out_dir, predict_type)
         else:
-            if predict_type == RANK_TYPE:
-                out_path = args.output or os.path.join(OUT_DIR, f"{args.pathogen}.csv")
-            else:
-                out_path = os.path.join(rank_base, predict_type, f"{args.pathogen}.csv")
+            out_path = os.path.join(out_dir, f"{args.pathogen}.csv")
             n_models = run_pathogen(args.pathogen, args.drugbank, args.models_dir,
                                     out_path, predict_type)
     elapsed_min = (time.time() - t0) / 60
