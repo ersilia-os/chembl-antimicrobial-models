@@ -71,6 +71,19 @@ With `--cleanup`, removes the intermediate `04_positives_splits/`, `05_decoys/`,
 
 ---
 
+## 06b_plot_decoys.py
+
+Decoy-quality figure comparing eos3e6s decoys against random reference compounds. Loads `06_eos3e6s_v1.csv`, selects N reference rows (`--compounds`), assigns each reference 10 random decoys drawn from its own `smi_*` columns (→ N×10), and samples N×10 random reference compounds (the `input` column) across the whole table as a baseline. Frees the table from memory, prints a summary, and saves a 2×3 stylia figure to `output/06_decoys/06b_decoys.png`:
+
+- **Panel 1:** Tanimoto similarity to the reference (Morgan/ECFP4), ref–decoy vs ref–random.
+- **Panels 2–6:** absolute per-pair difference in MW, LogP, HBA, HBD, and rotatable bonds, ref–decoy vs ref–random.
+
+Each reference is paired with its own 10 decoys and 10 randoms, so both distributions per panel are size N×10 (symmetric).
+
+**Defaults:** `--compounds` 100; 10 decoys per reference; fingerprint Morgan radius 2 / 2048 bits (ECFP4). Row selection, decoy assignment, and random sampling all use `RANDOM_SEED` from `src/default.py`. The random baseline is drawn from the reference compounds (`input`), not from the decoy pool.
+
+---
+
 ## 07_prepare_datasets.py
 
 Prepares the final compound datasets for model training. Runs four stages in sequence:
