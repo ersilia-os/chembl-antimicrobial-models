@@ -86,13 +86,35 @@ def main():
             f"--repo-dir {repo_dir} first."
         )
 
-    print(f"[1/4] rsync checkpoints -> {repo_dir}/model/checkpoints/models/")
-    src_models = os.path.join(MODELS_DIR, pathogen) + "/"
-    dst_models = os.path.join(repo_dir, "model", "checkpoints", "models") + "/"
-    os.makedirs(dst_models, exist_ok=True)
-    res = subprocess.run(["rsync", "-a", "--delete", src_models, dst_models])
-    if res.returncode != 0:
-        sys.exit(f"FAIL: rsync exit {res.returncode}.")
+    print(f"[1/4] sync kept-only checkpoints -> {repo_dir}/model/checkpoints/models/")
+    # Only sync the sub-models that survived AUROC filtering (those in
+    # reports.csv). Without this filter, checkpoints for filtered-out
+    # sub-models would bloat the published repo even though main.py never
+    # loads them (it reads MODEL_NAMES from run_columns.csv, which has only
+    # the kept set).
+    import csv as _csv
+    with open(os.path.join(pkg, "reports.csv")) as f:
+        kept = sorted({r["model_name"] for r in _csv.DictReader(f)})
+    src_root = os.path.join(MODELS_DIR, pathogen)
+    dst_root = os.path.join(repo_dir, "model", "checkpoints", "models")
+    os.makedirs(dst_root, exist_ok=True)
+    # Drop any dst sub-dir not in `kept` (this covers both filtered-out
+    # sub-models and ones removed by retraining).
+    dropped = sorted(set(os.listdir(dst_root)) - set(kept))
+    for sub in dropped:
+        shutil.rmtree(os.path.join(dst_root, sub))
+    if dropped:
+        print(f"      dropped {len(dropped)}: {dropped}")
+    # Mirror each kept sub-model from source. `rsync -a --delete` per-dir
+    # gives byte-identical contents and prunes stale files within a sub-dir.
+    for sub in kept:
+        src = os.path.join(src_root, sub) + "/"
+        dst = os.path.join(dst_root, sub) + "/"
+        os.makedirs(dst, exist_ok=True)
+        res = subprocess.run(["rsync", "-a", "--delete", src, dst])
+        if res.returncode != 0:
+            sys.exit(f"FAIL: rsync sub-model '{sub}' exit {res.returncode}.")
+    print(f"      {len(kept)} sub-models synced")
 
     print(f"[2/4] copy 6 artifacts from {pkg}/")
     for src_name, dst_rel in _FILE_COPIES:
