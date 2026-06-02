@@ -84,7 +84,7 @@ Each reference is paired with its own 10 decoys and 10 randoms, so both distribu
 
 ---
 
-## 07_prepare_datasets.py
+## 07a_prepare_datasets.py
 
 Prepares the final compound datasets for model training. Runs four stages in sequence:
 
@@ -110,7 +110,7 @@ Per-dataset InChIKey-deduplication audit of the post-07 datasets. For each datas
 
 ## 07c_plot_datasets.py
 
-Three-panel figure built from the post-augmentation metadata: datasets per pathogen, per-dataset active ratio, and total decoys added per pathogen (log-scaled). Datasets that received decoys are drawn as hollow markers in the active-ratio scatter. Output: `output/07_datasets/07_datasets.png`.
+Three-panel figure built from the post-augmentation metadata: datasets per pathogen (stacked — solid fill for datasets without decoys, white fill / colored edge for datasets that received decoys), per-dataset active ratio, and total decoys added per pathogen (log-scaled). Datasets that received decoys are drawn as hollow markers in the active-ratio scatter. Output: `output/07_datasets/07_datasets.png`.
 
 ---
 
@@ -152,9 +152,11 @@ Downloads DrugBank SMILES from a public GitHub mirror, validates them with RDKit
 
 ---
 
-## 12a_predict_drugbank.py / 12a_predict_drugbank_local.py
+## 12a_predict_drugbank.py
 
-Predicts DrugBank ranks for each pathogen using the trained LazyQSAR models. `12a_predict_drugbank.py` is the cluster variant — it points LazyQSAR at the project `output/08_weights/` directory; `12a_predict_drugbank_local.py` uses the descriptor weights from a local LazyQSAR install. Both accept `--pathogen <code>` (single output) or `--all_pathogens` (one pass, then split per pathogen). Output: `output/12_drugbank/{pathogen}.csv` with `smiles` + one column per sub-model.
+Predicts DrugBank scores for each pathogen using the trained LazyQSAR models, across every predict type in `PREDICT_TYPES` (`rank`, `proba`, `score`, `logit`, `lift`, `binary`), run in series. Points LazyQSAR at the project `output/08_weights/` directory (via a `HOME` override). Accepts `--pathogen <code>` (single output) or `--all_pathogens` (one pass per type, then split per pathogen). Output: `rank` stays at `output/12_drugbank/{pathogen}.csv`; each other type writes to `output/12_drugbank/{type}/{pathogen}.csv`, with `smiles` + one column per sub-model.
+
+**Descriptor note:** the lazy-qsar multi-model `predict()` API computes descriptors once per featurizer *within* a call but discards them afterwards, so descriptors are recomputed once per predict type (N types ⇒ N× descriptor cost). The `_ensemble_cache` from lazy-qsar issue #26 is a separate single-model code path not used here.
 
 ---
 

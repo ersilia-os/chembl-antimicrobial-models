@@ -36,7 +36,7 @@ Step 07 — Prepare datasets for model training.
     augmentation); sorted by pathogen.
 
 Usage:
-    python scripts/07_prepare_datasets.py
+    python scripts/07a_prepare_datasets.py
 """
 
 import gzip

@@ -65,7 +65,7 @@ See [scripts/README.md](scripts/README.md) for a description of each step.
 | 04  | `scripts/04_setup_decoy_run.py` *(HPC)* |
 | 05  | `scripts/05_run_decoys.sh` *(HPC)* / `scripts/05_run_decoys_ersilia.sh` *(local)* |
 | 06  | `scripts/06_aggregate_decoys.py` |
-| 07  | `scripts/07_prepare_datasets.py` |
+| 07a | `scripts/07a_prepare_datasets.py` |
 | 07b | `scripts/07b_quality_checks.py` |
 | 07c | `scripts/07c_plot_datasets.py` |
 | 08  | `scripts/08_download_weights.py` *(HPC)* |

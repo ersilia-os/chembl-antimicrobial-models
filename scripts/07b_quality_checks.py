@@ -48,9 +48,9 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 
 def _load_smiles_to_inchikey():
-    """Import smiles_to_inchikey from 07_prepare_datasets.py (digit-leading filename)."""
+    """Import smiles_to_inchikey from 07a_prepare_datasets.py (digit-leading filename)."""
     spec = importlib.util.spec_from_file_location(
-        "_prep07", os.path.join(root, "07_prepare_datasets.py")
+        "_prep07", os.path.join(root, "07a_prepare_datasets.py")
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
