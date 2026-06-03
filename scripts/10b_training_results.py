@@ -1,11 +1,16 @@
 """
 Step 10b — Per-pathogen training-result figures.
 
-For each pathogen, renders a 3-panel figure (one panel stacked per dataset along x):
+For each pathogen, renders a 4-panel figure (panels stacked, one bar/group per
+dataset along x):
   (a) AUROC bars with cross-fold std error bars
-  (b) Final aggregate weight bars
-  (c) Out-of-fold rank-score distributions (boxplot + jittered scatter) for
+  (b) Out-of-fold rank-score distributions (boxplot + jittered scatter) for
       actives vs inactives, with the decision_cutoff_rank overlaid as a dashed line.
+  (c) Training-set composition (log scale): grouped bars for actives, inactives
+      and decoys per dataset.
+  (d) Final aggregate weight bars
+
+In panels (a) and (d) a white bar marks datasets that include decoys.
 
 Inputs:
   - output/10_reports/10_reports.csv
@@ -27,7 +32,8 @@ import os
 import numpy as np
 import pandas as pd
 import stylia
-from stylia import CategoricalPalette, save_figure
+from matplotlib.patches import Patch
+from stylia import ArticleColors, CategoricalPalette, ErsiliaColors, save_figure
 
 
 root = os.path.dirname(os.path.abspath(__file__))
@@ -60,12 +66,13 @@ def _load_oof_rank(pathogen: str, model_name: str):
 
 
 def plot_pathogen(report_pathogen: pd.DataFrame, pathogen: str, pathogen_name: str,
-                  pal: CategoricalPalette, rng: np.random.Generator) -> str:
+                  pal: CategoricalPalette, nc: ArticleColors, ec: ErsiliaColors,
+                  rng: np.random.Generator) -> str:
     report_pathogen = report_pathogen.reset_index(drop=True)
     n = len(report_pathogen)
     x = list(range(n))
 
-    fig, axs = stylia.create_figure(3, 1, width=0.6, height=0.5)
+    fig, axs = stylia.create_figure(4, 1, width=0.6, height=0.67)
     fig.suptitle(f"{pathogen_name} ({n} datasets)", fontsize=12)
 
     # (a) AUROC
@@ -104,8 +111,8 @@ def plot_pathogen(report_pathogen: pd.DataFrame, pathogen: str, pathogen_name: s
 
         x_actives   = i + w + rng.uniform(-w, w, size=len(actives))
         x_inactives = i - w + rng.uniform(-w, w, size=len(inactives))
-        ax.scatter(x_actives,   actives,   color=pal.get(8)[3], s=1, alpha=0.4, lw=0)
-        ax.scatter(x_inactives, inactives, color=pal.get(8)[7], s=1, alpha=0.4, lw=0)
+        ax.scatter(x_actives,   actives,   color=nc.crimson, s=1, alpha=0.4, lw=0)
+        ax.scatter(x_inactives, inactives, color=nc.silver,  s=1, alpha=0.4, lw=0)
 
         cutoff = cutoffs[i]
         if cutoff is not None and not (isinstance(cutoff, float) and np.isnan(cutoff)):
@@ -128,32 +135,77 @@ def plot_pathogen(report_pathogen: pd.DataFrame, pathogen: str, pathogen_name: s
                     positions=[i - w, i + w], widths=w * 2,
                     patch_artist=True, showfliers=False)
         for box in bp["boxes"]:
-            box.set_linewidth(0.4)
+            box.set_linewidth(0.8)
             box.set_facecolor("none")
         for element in ["whiskers", "caps", "medians"]:
             for line in bp[element]:
                 line.set_color("k")
-                line.set_linewidth(0.4 if element != "caps" else 0)
+                line.set_linewidth(0.8 if element != "caps" else 0)
 
     ax.set_xticks(x)
     ax.set_xticklabels([""] * n)
+    ax.legend(
+        handles=[
+            Patch(facecolor=nc.crimson, edgecolor="none", label="Actives"),
+            Patch(facecolor=nc.silver,  edgecolor="none", label="Inactives + decoys"),
+        ],
+        fontsize=5, loc="lower right", frameon=True, framealpha=0.85,
+        handlelength=1.0, handletextpad=0.4, borderpad=0.3,
+    )
 
-    # (c) Final weights
+    # (c) Training-set composition: actives / inactives / decoys (log scale)
     ax = axs.next()
     ax.set_xlabel("")
-    ax.set_ylabel("Weight\nvalue")
+    ax.set_xticks(x)
+    ax.set_xticklabels([""] * n)
+    ax.set_ylabel("Number of compounds")
+    ax.set_yscale("log")
+    ax.set_xlim([-0.7, n - 0.3])
+    n_pos   = report_pathogen["n_positives"].tolist()
+    n_dec   = report_pathogen["n_decoys"].tolist()
+    n_inact = (report_pathogen["n_compounds"]
+               - report_pathogen["n_positives"]
+               - report_pathogen["n_decoys"]).tolist()
+    top = 10 ** math.ceil(math.log10(max(report_pathogen["n_compounds"])))
+    ax.set_ylim([1, top])
+    bw = 0.27
+    for i in range(n):
+        for off, val, col in ((-bw, n_pos[i],   nc.crimson),
+                              (0.0, n_inact[i], nc.cobalt),
+                              (bw,  n_dec[i],   "white")):
+            if val > 0:
+                ax.bar(i + off, val, width=bw, color=col, ec="k", lw=0.7)
+    ax.legend(
+        handles=[
+            Patch(facecolor=nc.crimson, edgecolor="k", lw=0.5, label="Actives"),
+            Patch(facecolor=nc.cobalt,  edgecolor="k", lw=0.5, label="Inactives"),
+            Patch(facecolor="white",    edgecolor="k", lw=0.5, label="Decoys"),
+        ],
+        fontsize=5, loc="upper right", ncol=3, frameon=True, framealpha=0.85,
+        handlelength=1.0, handletextpad=0.4, borderpad=0.3, columnspacing=0.8,
+    )
+
+    # (d) Final weights
+    ax = axs.next()
+    ax.set_xlabel("")
+    ax.set_ylabel("Average weight (w1-w7)")
     final_weights = report_pathogen["final_weight"].tolist()
     w_min, w_max = min(final_weights), max(final_weights)
     y_lo = max(0.0, math.floor(w_min * 10) / 10)
     y_hi = min(1.0, math.ceil(w_max * 10) / 10)
     ax.set_ylim([y_lo, y_hi])
     ax.set_xlim([-0.7, n - 0.3])
-    weight_fill = pal.get(8)[4]
+    weight_fill = ec.plum
     for i in range(n):
         face = "white" if has_decoys[i] else weight_fill
         ax.bar(i, final_weights[i], color=face, ec="k", lw=0.7)
     ax.set_xticks(x)
-    ax.set_xticklabels([f"Model #{i + 1}" for i in x], rotation=90)
+    if n > 20:
+        labels = [str(i + 1) if (i + 1) % 5 == 0 else "" for i in x]
+    else:
+        labels = [f"{i + 1}" for i in x]
+    ax.set_xticklabels(labels, rotation=0)
+    ax.set_xlabel("Model number")
 
     out_path = os.path.join(OUT_DIR, f"10_training_{pathogen}.png")
     save_figure(out_path)
@@ -179,6 +231,8 @@ def main():
     stylia.set_format("slide")
     stylia.set_style("article")
     pal = CategoricalPalette("npg")
+    nc = ArticleColors()
+    ec = ErsiliaColors()
     rng = np.random.default_rng(RANDOM_SEED)
 
     for code in codes:
@@ -188,7 +242,7 @@ def main():
             continue
         name = code_to_name.get(code, code)
         print(f"Plotting {name} ({code}): {len(sub)} datasets")
-        out = plot_pathogen(sub, code, name, pal, rng)
+        out = plot_pathogen(sub, code, name, pal, nc, ec, rng)
         print(f"  saved: {out}")
 
 
