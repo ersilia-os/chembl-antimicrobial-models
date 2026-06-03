@@ -25,6 +25,7 @@ import os
 import numpy as np
 import pandas as pd
 import stylia
+from adjustText import adjust_text
 from scipy.optimize import brentq, curve_fit, minimize_scalar
 from stylia import save_figure
 
@@ -145,18 +146,26 @@ def _plot(points, a_hat, tau_hat):
     M_cont = np.linspace(max(2, Ms.min()), max(100.0, Ms.max()), 400)
     ax.plot(M_cont, _k_model(M_cont, a_hat, tau_hat), lw=2.5, label="k(M) fit")
     ax.scatter(Ms, ks, color="black", s=40, zorder=5, label=r"empirical $k^*$")
-    for _, row in points.iterrows():
-        ax.annotate(row["pathogen"], (row["M"], row["k_star"]),
-                    xytext=(4, 2), textcoords="offset points", fontsize=8)
     ax.set_xlabel("Number of models M")
     ax.set_ylabel("k (tanh steepness)")
     ax.set_title(r"M $\rightarrow$ k mapping")
     ax.legend(loc="lower right")
-    ax.annotate(
+
+    # Formula box, centered on the right edge; placed before label repulsion so
+    # adjust_text treats it as an obstacle and keeps pathogen labels clear of it.
+    formula = ax.annotate(
         r"$k(M) = 2\,(1 + a\,(1 - e^{-M/\tau}))$" + "\n" +
         rf"$a = {a_hat:.4f},\ \tau = {tau_hat:.4f}$",
-        xy=(0.04, 0.96), xycoords="axes fraction", ha="left", va="top",
+        xy=(0.98, 0.5), xycoords="axes fraction", ha="right", va="center",
         fontsize=10, bbox=dict(boxstyle="round,pad=0.4", fc="white", ec="0.6"),
+    )
+
+    texts = [ax.text(row["M"], row["k_star"], row["pathogen"], fontsize=8)
+             for _, row in points.iterrows()]
+    adjust_text(
+        texts, x=Ms, y=ks, ax=ax, objects=[formula],
+        arrowprops=dict(arrowstyle="-", color="0.5", lw=0.5),
+        expand=(1.3, 1.6), force_text=(0.4, 0.6),
     )
 
     save_figure(FIG_PATH)
