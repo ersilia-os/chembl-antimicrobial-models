@@ -1,25 +1,17 @@
 """
 Step 16b — Per-pathogen consensus-recapitulation figures.
 
-For each pathogen, renders a 6x2 panel figure summarising:
-  [ 0] DrugBank prob_rank scores per sub-model (+ decision_cutoff_rank line)
-  [ 1] AUROC histogram from per-model recapitulation (off-diagonal pairs)
-  [ 2] Consensus scores: weighted (per excluded-model + global)
-  [ 3] Consensus scores: unweighted
-  [ 4] Consensus scores: weighted, tanh-transformed
-  [ 5] Consensus scores: unweighted, tanh-transformed
-  [ 6] RMSE importance per model (weighted)
-  [ 7] RMSE importance per model (unweighted)
-  [ 8] AUROC: consensus-with vs consensus-without each model (weighted)
-  [ 9] AUROC: consensus-with vs consensus-without each model (unweighted)
-  [10] AUROC histogram from consensus-exclusion recapitulation (weighted)
-  [11] AUROC histogram from consensus-exclusion recapitulation (unweighted)
+For each pathogen, renders a 4x1 panel figure summarising:
+  [0] DrugBank prob_rank scores per sub-model (+ decision_cutoff_rank line)
+  [1] Consensus scores: weighted, tanh-transformed (per excluded-model + global)
+  [2] AUROC: consensus-with vs consensus-without each model (weighted)
+  [3] AUROC histogram from per-model recapitulation (off-diagonal pairs)
 
 Inputs (per pathogen):
   - output/12_drugbank/{pathogen}.csv
-  - output/14_consensus/{pathogen}.csv (+ _unweighted, _transformed, _unweighted_transformed)
+  - output/14_consensus/{pathogen}_transformed.csv
   - output/15_recapitulate_models/{pathogen}.csv
-  - output/16_recapitulate_consensus/{pathogen}_weighted_transformed.csv (+ _unweighted_transformed, _exc_weighted_transformed, _exc_unweighted_transformed)
+  - output/16_recapitulate_consensus/{pathogen}_weighted_transformed.csv (+ _exc_weighted_transformed)
   - output/10_reports/10_reports.csv  (for decision_cutoff_rank)
 
 Output:
@@ -97,15 +89,6 @@ def _consensus_panel(ax, df, model_cols, pal, rng, ylabel):
     ax.set_xlabel(None)
 
 
-def _model_importance(df_consensus, model_cols):
-    excl_map = {c.replace("excluded_", ""): c
-                for c in df_consensus.columns if c.startswith("excluded_")}
-    cols = [excl_map[m] if m in excl_map else None for m in model_cols] + ["consensus_score"]
-    return [np.sqrt(((df_consensus["consensus_score"] - df_consensus[c]) ** 2).mean())
-            if c is not None else np.nan
-            for c in cols]
-
-
 def _hist_panel(ax, values, pal):
     ax.set_xlabel("AUROC")
     ax.set_ylabel("Count")
@@ -145,15 +128,10 @@ def _consensus_vs_excl_panel(ax, model_cols, df_inc, df_exc, pal, rng, legend_la
 
 def plot_pathogen(pathogen, pathogen_name, reports, pal, rng):
     df12        = pd.read_csv(os.path.join(DRUGBANK_DIR,  f"{pathogen}.csv"))
-    df14_w      = pd.read_csv(os.path.join(CONSENSUS_DIR, f"{pathogen}.csv"))
-    df14_uw     = pd.read_csv(os.path.join(CONSENSUS_DIR, f"{pathogen}_unweighted.csv"))
     df14_w_t    = pd.read_csv(os.path.join(CONSENSUS_DIR, f"{pathogen}_transformed.csv"))
-    df14_uw_t   = pd.read_csv(os.path.join(CONSENSUS_DIR, f"{pathogen}_unweighted_transformed.csv"))
     df_recap_m  = pd.read_csv(os.path.join(RECAP_M_DIR,   f"{pathogen}.csv"))
     df_rec_inc  = pd.read_csv(os.path.join(RECAP_C_DIR,   f"{pathogen}_weighted_transformed.csv"))
-    df_rec_iuw  = pd.read_csv(os.path.join(RECAP_C_DIR,   f"{pathogen}_unweighted_transformed.csv"))
     df_rec_exc  = pd.read_csv(os.path.join(RECAP_C_DIR,   f"{pathogen}_exc_weighted_transformed.csv"))
-    df_rec_euw  = pd.read_csv(os.path.join(RECAP_C_DIR,   f"{pathogen}_exc_unweighted_transformed.csv"))
 
     model_cols = [c for c in df12.columns if c != "smiles"]
     report_p   = reports[reports["pathogen"] == pathogen].set_index("model_name")
@@ -164,7 +142,7 @@ def plot_pathogen(pathogen, pathogen_name, reports, pal, rng):
     stylia.set_style("article")
     pal = CategoricalPalette("npg")
 
-    fig, axs = stylia.create_figure(6, 2, width=1.3, height=1)
+    fig, axs = stylia.create_figure(4, 1, width=1.3, height=1)
     fig.suptitle(
         f"{pathogen_name} models ({N}) vs.\nDrugBank compounds ({len(df12)} compounds)",
         fontsize=9, y=0.99,
@@ -185,52 +163,17 @@ def plot_pathogen(pathogen, pathogen_name, reports, pal, rng):
     ax.set_xticklabels(range(N), rotation=0, size=6)
     ax.set_xlabel(None)
 
-    # [1] AUROC recapitulation per-model (off-diagonal)
-    ax = axs.next()
-    df_recap_off = df_recap_m[df_recap_m["model_scorer"] != df_recap_m["model_binarized"]]
-    _hist_panel(ax, df_recap_off, pal)
+    # [1] Consensus scores: weighted, tanh-transformed
+    _consensus_panel(axs.next(), df14_w_t, model_cols, pal, rng, "consensus score\ntransformed")
 
-    # [2-5] Consensus score panels
-    _consensus_panel(axs.next(), df14_w,    model_cols, pal, rng, "consensus score")
-    _consensus_panel(axs.next(), df14_uw,   model_cols, pal, rng, "consensus score\nunweighted")
-    _consensus_panel(axs.next(), df14_w_t,  model_cols, pal, rng, "consensus score\ntransformed")
-    _consensus_panel(axs.next(), df14_uw_t, model_cols, pal, rng, "consensus score\ntransf. unweighted")
-
-    NC = len([c for c in df14_w.columns if c.startswith("excluded_")]) + 1
-
-    # [6] RMSE (weighted)
-    ax = axs.next()
-    imp_w = _model_importance(df14_w, model_cols)
-    ax.bar(range(NC), imp_w, color=pal.get(8)[3], width=0.6)
-    ax.set_ylabel("RMSE\nweighted")
-    ax.set_xlim([-0.7, NC - 0.3])
-    ax.set_xticks(range(NC))
-    ax.set_xticklabels(list(range(NC - 1)) + ["G."], rotation=0, size=6)
-    ax.set_xlabel(None)
-
-    # [7] RMSE (unweighted)
-    ax = axs.next()
-    imp_uw = _model_importance(df14_uw, model_cols)
-    ax.bar(range(NC), imp_uw, color=pal.get(8)[3], width=0.6)
-    ax.set_ylabel("RMSE\nunweighted")
-    ax.set_xlim([-0.7, NC - 0.3])
-    ax.set_xticks(range(NC))
-    ax.set_xticklabels(list(range(NC - 1)) + ["G."], rotation=0, size=6)
-    ax.set_xlabel(None)
-
-    # [8] AUROC consensus-incl vs consensus-excl (weighted)
+    # [2] AUROC consensus-incl vs consensus-excl (weighted)
     _consensus_vs_excl_panel(axs.next(), model_cols, df_rec_inc, df_rec_exc, pal, rng,
                              legend_labels=["model excl.", "model incl."])
 
-    # [9] AUROC consensus-incl vs consensus-excl (unweighted)
-    _consensus_vs_excl_panel(axs.next(), model_cols, df_rec_iuw, df_rec_euw, pal, rng,
-                             legend_labels=["model unw. excl.", "model unw. incl."])
-
-    # [10] AUROC histogram from exc weighted
-    _hist_panel(axs.next(), df_rec_exc, pal)
-
-    # [11] AUROC histogram from exc unweighted
-    _hist_panel(axs.next(), df_rec_euw, pal)
+    # [3] AUROC recapitulation per-model (off-diagonal)
+    ax = axs.next()
+    df_recap_off = df_recap_m[df_recap_m["model_scorer"] != df_recap_m["model_binarized"]]
+    _hist_panel(ax, df_recap_off, pal)
 
     out_path = os.path.join(OUT_DIR, f"16_consensus_{pathogen}.png")
     save_figure(out_path)
