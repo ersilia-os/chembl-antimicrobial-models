@@ -16,7 +16,7 @@ git clone https://github.com/ersilia-os/chembl-antimicrobial-models.git
 cd chembl-antimicrobial-models
 conda env create -f environment.yml --prefix ./envs/camm
 conda activate ./envs/camm
-pip install --ignore-installed "lazyqsar[all]==3.2.0"
+pip install --ignore-installed "lazyqsar[all]==3.4.2"
 ```
 
 > **Note:** Environment creation may take 5–10 minutes. The explicit `pip install` step after `conda env create` is required because conda's pip integration does not always resolve all transitive dependencies — running pip directly ensures LazyQSAR and all its dependencies are fully installed.
