@@ -1,50 +1,45 @@
 """
 Step 07 — Prepare datasets for model training.
 
-(1) Loads and normalises dataset metadata from:
-      - data/processed/chembl/01_chembl_datasets_all.csv
-        → adds 'inactives' (compounds − positives)
-      - data/processed/pubchem/02_pubchem_datasets_organism.csv
-        → drops 'cids', 'inconclusive', 'unspecified'; renames pathogen_code,
-          aid, actives; uppercases 'target_type'; adds source = 'pubchem'
-    Both tables are concatenated and share a common 'target_type' column.
-(2) Flags ChEMBL datasets superseded by a PubChem assay: if a PubChem row has
-    a chembl_id and that ID appears in a ChEMBL dataset name, the ChEMBL dataset
-    is marked keep=False. All other datasets are keep=True.
-(3) Loads decoy data from output/06_decoys/06_eos3e6s_v1.csv and builds a dict
-    mapping each input compound's InChIKey to up to N_DECOYS randomly sampled decoys.
-(4) Extracts raw compound CSVs (keep=True only) from per-pathogen zip archives
-    (ChEMBL) or flat CSVs (PubChem); writes to
-    output/07_datasets/{pathogen}/{name}.csv with columns smiles, bin.
-    Raises ValueError if any bin value outside {0, 1} is found. Each dataset is
-    deduplicated at the InChIKey level (dedup_by_inchikey): one row per molecule,
-    SMILES stored as RDKit canonical SMILES, and active wins (bin=1) on an
-    active/inactive label conflict. SMILES RDKit cannot parse are kept as-is.
-    (ChEMBL is already deduplicated upstream so this is largely a no-op there;
-    PubChem carries genuine duplicates and label conflicts that this resolves.)
-(5) For datasets with ratio > 0.5, augments with decoy compounds to bring
-    the active ratio down to ~0.1. Before sampling, decoy candidates whose
-    InChIKey matches a compound already in the dataset, or an active (bin=1) in
-    any dataset of the same pathogen, are excluded; selected decoys are stored as
-    canonical SMILES. Augmented datasets gain a 'decoy' column (False for original
-    rows, True for added decoys). Datasets below the threshold are not modified and
-    will not contain a 'decoy' column.
-(6) Saves output/07_datasets/07_datasets_metadata.csv — the normalised combined
-    metadata (all rows, including keep=False) with additional columns: 'decoys'
-    (number of decoy rows added, 0 for non-augmented datasets), 'final_ratio'
-    (ratio after augmentation), and 'final_compounds' (total rows after
-    augmentation); sorted by pathogen.
+(1) Loads and combines dataset metadata from:
+      - data/processed/chembl/01_chembl_datasets_all.csv   (stage4 pooled datasets)
+      - data/processed/pubchem/02_pubchem_datasets_organism.csv  (step-08 pooled organism datasets)
+    Both tables already share `pathogen`, `source`, `name`, `compounds`, `positives`,
+    `target_type`. `inactives` (= compounds − positives) is added; `auroc` (ChEMBL only)
+    is renamed `auroc_baseline`.
+(2) Extracts the compound table for every dataset:
+      - ChEMBL  : data/raw/chembl/<pathogen>/<name>.csv.gz
+      - PubChem : data/raw/pubchem/<pathogen>/<name>.csv
+    Keeps [inchikey, smiles, bin] and validates bin ∈ {0, 1}. The upstream repos already
+    curate and deduplicate their datasets, so this step does NOT re-deduplicate or re-binarise —
+    it passes the rows through unchanged and only WARNS if it finds duplicate InChIKeys or
+    active/inactive label conflicts (which would indicate an upstream regression). Writes to
+    output/07_datasets/<pathogen>/<name>.csv, overwriting, so the step is idempotent
+    (augmentation below always starts from the unaugmented file).
+(3) Balances every dataset whose active ratio exceeds HIGH_RATIO_THRESHOLD (0.5) down to a
+    ratio of 0.5 by adding real measured negatives ("proven negatives") — compounds that are
+    inactive (bin=0) in another dataset of the same pathogen. A candidate is excluded if its
+    InChIKey is already in the dataset, or if it is a proven active (bin=1) in ANY dataset of
+    the same pathogen (label conflict). The pool spans both ChEMBL and PubChem datasets of the
+    pathogen. If the proven-negative pool is exhausted before reaching 0.5, the shortfall is
+    topped up with decoys from output/06_decoys/06_eos3e6s_v1.csv (drawn from the dataset's own
+    actives, same exclusions; loaded lazily, only if a shortfall occurs). Added rows get bin=0
+    and added_negative=True.
+(4) Saves output/07_datasets/07_datasets_metadata.csv — the combined metadata with added
+    columns: added_negatives (real negatives added), added_decoys (decoy fallback added),
+    final_ratio (after balancing) and final_compounds; sorted by pathogen.
+
+InChIKey note: extraction and pool building trust the upstream `inchikey` column rather than
+recomputing it — both source pipelines emit standard InChIKeys. RDKit is only used on the
+decoy fallback path (decoy SMILES have no precomputed InChIKey).
 
 Usage:
     python scripts/07a_prepare_datasets.py
 """
 
-import gzip
-import io
 import os
 import random
 import sys
-import zipfile
 
 import pandas as pd
 from rdkit import Chem
@@ -54,16 +49,10 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 sys.path.append(os.path.join(ROOT, "..", "src"))
 
-from default import (
-    CHEMBL_ZIP_FINAL,
-    CHEMBL_ZIP_GENERAL,
-    CHEMBL_ZIP_GENERAL_HIGH,
-    CHEMBL_ZIP_GENERAL_NO_PUBCHEM,
-    CHEMBL_ZIP_GENERAL_NO_PUBCHEM_HIGH,
+from default import (  # noqa: E402
     HIGH_RATIO_THRESHOLD,
     N_DECOYS,
     RANDOM_SEED,
-    TARGET_RATIO,
 )
 
 CHEMBL_METADATA_PATH = os.path.join(REPO_ROOT, "data", "processed", "chembl", "01_chembl_datasets_all.csv")
@@ -73,6 +62,11 @@ RAW_DIR               = os.path.join(REPO_ROOT, "data", "raw")
 OUT_DIR               = os.path.join(REPO_ROOT, "output", "07_datasets")
 META_OUT_PATH         = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
 
+# Balance datasets above this ratio down to exactly this ratio (0.5 = perfectly balanced).
+BALANCE_RATIO = HIGH_RATIO_THRESHOLD
+
+DATASET_COLS = ["inchikey", "smiles", "bin"]
+
 
 def _validate_bin(df: pd.DataFrame, name: str) -> None:
     invalid = df.loc[~df["bin"].isin([0, 1]), "bin"].unique()
@@ -80,19 +74,12 @@ def _validate_bin(df: pd.DataFrame, name: str) -> None:
         raise ValueError(f"Dataset {name!r} contains invalid bin values: {invalid.tolist()}")
 
 
-# Memoise SMILES -> (canonical SMILES, InChIKey) for the whole run. The same SMILES
-# recurs heavily (duplicate strings within a dataset, shared compounds across datasets,
-# and again between extraction, decoy loading and augmentation), and InChIKey generation
-# is the dominant cost — caching avoids recomputing it. Keys/values are strings only
-# (no RDKit mol objects are retained).
+# RDKit SMILES -> (canonical SMILES, InChIKey), memoised. Used only on the decoy fallback path.
 _IK_CACHE: dict[str, tuple] = {}
 
 
 def smiles_to_inchikey(smi: str) -> tuple:
-    """Return (canonical_smiles, inchikey) for a SMILES, or (None, None) if unparsable.
-
-    Result is memoised in the module-level _IK_CACHE.
-    """
+    """Return (canonical_smiles, inchikey) for a SMILES, or (None, None) if unparsable."""
     s = str(smi)
     cached = _IK_CACHE.get(s)
     if cached is not None:
@@ -103,38 +90,20 @@ def smiles_to_inchikey(smi: str) -> tuple:
     return result
 
 
-def dedup_by_inchikey(df: pd.DataFrame, name: str) -> pd.DataFrame:
-    """Collapse rows to one per InChIKey.
+def assert_no_duplicates(df: pd.DataFrame, name: str) -> None:
+    """Verify the dataset has no duplicate InChIKeys or active/inactive label conflicts.
 
-    Parsable SMILES are grouped by InChIKey; each group becomes a single row whose
-    SMILES is the RDKit canonical SMILES and whose bin is the max over the group
-    (active wins on an active/inactive label conflict). Rows whose SMILES RDKit
-    cannot parse are kept verbatim — never merged, never dropped.
+    We trust the upstream repos' curation and do NOT re-deduplicate or re-binarise — this
+    only WARNS if a problem is found (an upstream regression), leaving the data unchanged.
     """
-    canon_by_ik: dict[str, str] = {}   # inchikey -> canonical SMILES (first seen)
-    bins_by_ik: dict[str, set] = {}    # inchikey -> set of bins observed
-    order: list[str] = []              # inchikeys in first-appearance order
-    unparsable: list[dict] = []        # rows kept as-is
-
-    for smi, b in zip(df["smiles"], df["bin"]):
-        canon, ik = smiles_to_inchikey(smi)
-        if ik is None:
-            unparsable.append({"smiles": smi, "bin": int(b)})
-            continue
-        if ik not in bins_by_ik:
-            bins_by_ik[ik] = set()
-            canon_by_ik[ik] = canon
-            order.append(ik)
-        bins_by_ik[ik].add(int(b))
-
-    rows = [{"smiles": canon_by_ik[ik], "bin": max(bins_by_ik[ik])} for ik in order]
-    n_conflicts = sum(1 for ik in order if len(bins_by_ik[ik]) > 1)
-    n_collapsed = len(df) - len(order) - len(unparsable)
-    if n_collapsed or n_conflicts or unparsable:
-        print(f"  [{name}] IK-dedup: {len(df)} -> {len(rows) + len(unparsable)} rows "
-              f"({n_collapsed} duplicate rows collapsed, {n_conflicts} active/inactive "
-              f"conflicts resolved active-first, {len(unparsable)} unparsable kept as-is)")
-    return pd.DataFrame(rows + unparsable, columns=["smiles", "bin"]).reset_index(drop=True)
+    nn = df.dropna(subset=["inchikey"])
+    n_dup = len(nn) - nn["inchikey"].nunique()
+    n_conflicts = int((nn.groupby("inchikey")["bin"].nunique() > 1).sum()) if len(nn) else 0
+    n_no_ik = int(df["inchikey"].isna().sum())
+    if n_dup or n_conflicts or n_no_ik:
+        print(f"  [WARN] {name}: {n_dup} duplicate-InChIKey rows, {n_conflicts} active/inactive "
+              f"label conflicts, {n_no_ik} rows without an InChIKey — left AS-IS "
+              f"(upstream curation trusted; no dedup/re-binarisation applied)")
 
 
 # ---------------------------------------------------------------------------
@@ -143,15 +112,10 @@ def dedup_by_inchikey(df: pd.DataFrame, name: str) -> pd.DataFrame:
 
 def load_metadata(chembl_path: str, pubchem_path: str) -> pd.DataFrame:
     chembl = pd.read_csv(chembl_path)
-    chembl["inactives"] = chembl["compounds"] - chembl["positives"]
-
     pubchem = pd.read_csv(pubchem_path)
-    pubchem = pubchem.drop(columns=["cids", "inconclusive", "unspecified"])
-    pubchem = pubchem.rename(columns={"pathogen_code": "pathogen", "aid": "name", "actives": "positives"})
-    pubchem["source"] = "pubchem"
-    pubchem["target_type"] = pubchem["target_type"].str.upper()
 
     df = pd.concat([chembl, pubchem], ignore_index=True)
+    df["inactives"] = df["compounds"] - df["positives"]
     if "auroc" in df.columns:
         df = df.rename(columns={"auroc": "auroc_baseline"})
     print(f"Loaded metadata: {len(df)} datasets across {df['pathogen'].nunique()} pathogens "
@@ -159,44 +123,56 @@ def load_metadata(chembl_path: str, pubchem_path: str) -> pd.DataFrame:
     return df
 
 
-def flag_chembl_duplicates(metadata: pd.DataFrame) -> pd.DataFrame:
-    chembl_to_pubchem = {
-        str(row["chembl_id"]): row
-        for _, row in metadata[metadata["source"] == "pubchem"].iterrows()
-        if pd.notna(row["chembl_id"])
-    }
-    metadata["keep"] = True
-    if not chembl_to_pubchem:
-        return metadata
+# ---------------------------------------------------------------------------
+# Step 2 — extract per-dataset compound tables
+# ---------------------------------------------------------------------------
 
-    chembl_named = metadata[
-        (metadata["source"] == "chembl") & metadata["name"].str.startswith("CHEMBL")
-    ]
-    leading_ids = chembl_named["name"].str.split("_", n=1).str[0]
-    flagged_indices = chembl_named.index[leading_ids.isin(chembl_to_pubchem)]
-    metadata.loc[flagged_indices, "keep"] = False
+def _extract(row: pd.Series) -> pd.DataFrame | None:
+    if row["source"] == "chembl":
+        path = os.path.join(RAW_DIR, "chembl", row["pathogen"], f"{row['name']}.csv.gz")
+    else:
+        path = os.path.join(RAW_DIR, "pubchem", row["pathogen"], f"{row['name']}.csv")
+    if not os.path.exists(path):
+        print(f"  [WARN] source file not found: {os.path.relpath(path, REPO_ROOT)}")
+        return None
+    df = pd.read_csv(path)  # pandas infers gzip from the .gz suffix
+    missing = [c for c in DATASET_COLS if c not in df.columns]
+    if missing:
+        print(f"  [WARN] {row['name']}: missing columns {missing}")
+        return None
+    df = df[DATASET_COLS].dropna(subset=["smiles"])
+    _validate_bin(df, row["name"])
+    return df.reset_index(drop=True)
 
-    print(f"Flagged {len(flagged_indices)} ChEMBL dataset(s) as keep=False (superseded by PubChem assays):")
-    for idx in flagged_indices:
-        crow = metadata.loc[idx]
-        prow = chembl_to_pubchem[leading_ids.loc[idx]]
-        pubchem_info = f"AID {int(prow['name'])} ({int(prow['compounds'])} cpds, {int(prow['positives'])} actives)"
-        print(f"  [{crow['pathogen']}] {crow['name']} ({int(crow['compounds'])} cpds, {int(crow['positives'])} actives)  →  PubChem {pubchem_info}")
-    return metadata
+
+def extract_datasets(metadata: pd.DataFrame) -> None:
+    for _, row in tqdm(metadata.iterrows(), total=len(metadata), desc="Extracting datasets", unit="dataset"):
+        out_path = os.path.join(OUT_DIR, row["pathogen"], f"{row['name']}.csv")
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+        df = _extract(row)
+        if df is None:
+            continue
+        assert_no_duplicates(df, row["name"])
+        # Write the upstream rows through unchanged (overwrite each run) so augmentation
+        # always starts from the unaugmented file — makes the whole step idempotent.
+        df.to_csv(out_path, index=False)
+    print(f"Datasets written to {OUT_DIR}")
 
 
 # ---------------------------------------------------------------------------
-# Step 2 — load decoys
+# Step 3 — decoy fallback pool (loaded lazily, only if a shortfall occurs)
 # ---------------------------------------------------------------------------
 
 def load_decoys(decoys_path: str) -> dict[str, list[str]]:
-    """Map each input compound's InChIKey to up to N_DECOYS sampled decoy SMILES.
+    """Map each input compound's InChIKey to up to N_DECOYS decoy SMILES.
 
-    Keying on InChIKey (rather than a canonical-SMILES string) makes the decoy
-    lookup robust to notation/canonicalisation differences between this script and
-    whatever produced the decoy file. On an InChIKey collision the first list wins.
+    Used only as a fallback when the proven-negative pool cannot balance a dataset to 0.5.
+    Returns {} (no fallback) if the decoy file is absent.
     """
-    print("Loading decoy data...")
+    if not os.path.exists(decoys_path):
+        print(f"[WARN] decoy file not found ({decoys_path}); no decoy fallback available.")
+        return {}
+    print("Loading decoy data (fallback)...")
     df = pd.read_csv(decoys_path)
     decoy_cols = [c for c in df.columns if c not in ("key", "input")]
     result: dict[str, list[str]] = {}
@@ -211,223 +187,159 @@ def load_decoys(decoys_path: str) -> dict[str, list[str]]:
             continue
         sampled = candidates if len(candidates) <= N_DECOYS else random.sample(candidates, N_DECOYS)
         result.setdefault(ik, sampled)
-    counts = [len(v) for v in result.values()]
-    msg = f"Loaded decoys: {len(result)} InChIKeys with {min(counts)}–{max(counts)} decoys each"
-    if n_unparsable:
-        msg += f" ({n_unparsable} unparsable inputs skipped)"
-    print(msg)
+    if result:
+        counts = [len(v) for v in result.values()]
+        msg = f"Loaded decoys: {len(result)} InChIKeys with {min(counts)}–{max(counts)} decoys each"
+        if n_unparsable:
+            msg += f" ({n_unparsable} unparsable inputs skipped)"
+        print(msg)
     return result
 
 
 # ---------------------------------------------------------------------------
-# Step 3 — extract datasets
+# Step 4 — balance high-ratio datasets with proven negatives (decoy fallback)
 # ---------------------------------------------------------------------------
 
-def _chembl_inner_filename(row: pd.Series) -> str:
-    if row["label"] in ("A", "B", "M"):
-        return f"{row['name']}.csv"
-    return f"{row['name']}.csv.gz"
+def _build_pathogen_pools(meta: pd.DataFrame) -> tuple[dict, dict]:
+    """Per pathogen, return (active InChIKeys, proven-negative {InChIKey: SMILES}).
 
-
-def _chembl_zip_path(row: pd.Series) -> str:
-    base = os.path.join(RAW_DIR, "chembl", row["pathogen"])
-    if row["label"] in ("A", "B", "M"):
-        return os.path.join(base, CHEMBL_ZIP_FINAL)
-    if row["pathogen"] == "pfalciparum":
-        no_pubchem = os.path.join(base, CHEMBL_ZIP_GENERAL_NO_PUBCHEM_HIGH)
-        return no_pubchem if os.path.exists(no_pubchem) else os.path.join(base, CHEMBL_ZIP_GENERAL_HIGH)
-    no_pubchem = os.path.join(base, CHEMBL_ZIP_GENERAL_NO_PUBCHEM)
-    return no_pubchem if os.path.exists(no_pubchem) else os.path.join(base, CHEMBL_ZIP_GENERAL)
-
-
-def _extract_chembl(row: pd.Series) -> pd.DataFrame:
-    if row.get("assay_type") == "general_aggregate":
-        csv_path = os.path.join(RAW_DIR, "chembl", row["pathogen"], f"{row['name']}.csv")
-        df = pd.read_csv(csv_path)[["smiles", "bin"]]
-        _validate_bin(df, row["name"])
-        return df
-
-    inner = _chembl_inner_filename(row)
-    with zipfile.ZipFile(_chembl_zip_path(row)) as zf:
-        with zf.open(inner) as f:
-            raw = gzip.open(f).read() if inner.endswith(".gz") else f.read()
-    df = pd.read_csv(io.BytesIO(raw))[["smiles", "bin"]]
-    _validate_bin(df, row["name"])
-    return df
-
-
-def _extract_pubchem(row: pd.Series) -> pd.DataFrame | None:
-    assay_path = os.path.join(RAW_DIR, "pubchem", row["pathogen"], f"{int(row['name'])}.csv")
-    if not os.path.exists(assay_path):
-        return None
-    df = pd.read_csv(assay_path)
-    if "smiles" not in df.columns or "bin" not in df.columns:
-        return None
-    df = df[["smiles", "bin"]].dropna(subset=["smiles"])
-    _validate_bin(df, row["name"])
-    return df.reset_index(drop=True)
-
-
-def extract_datasets(metadata: pd.DataFrame) -> None:
-    for _, row in tqdm(metadata.iterrows(), total=len(metadata), desc="Extracting datasets", unit="dataset"):
-        if not row["keep"]:
-            continue
-        out_path = os.path.join(OUT_DIR, row["pathogen"], f"{row['name']}.csv")
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-
-        if os.path.exists(out_path):
-            continue
-
-        if row["source"] == "chembl":
-            df = _extract_chembl(row)
-        else:
-            df = _extract_pubchem(row)
-            if df is None:
-                print(f"  [WARN] PubChem dataset not found or missing columns: {row['name']}")
+    A proven negative is a compound seen as bin=0 in some dataset of the pathogen and never
+    as bin=1 in any dataset of the pathogen (no conflict). Pools span ChEMBL and PubChem.
+    Uses the upstream inchikey column (no RDKit).
+    """
+    print("Building per-pathogen active / proven-negative pools...")
+    pathogen_actives: dict[str, set[str]] = {}
+    pathogen_negatives: dict[str, dict[str, str]] = {}
+    for pathogen, group in meta.groupby("pathogen"):
+        actives: set[str] = set()
+        negatives: dict[str, str] = {}
+        for name in group["name"]:
+            fpath = os.path.join(OUT_DIR, pathogen, f"{name}.csv")
+            if not os.path.exists(fpath):
                 continue
+            df_tmp = pd.read_csv(fpath, usecols=DATASET_COLS).dropna(subset=["inchikey"])
+            actives.update(df_tmp.loc[df_tmp["bin"] == 1, "inchikey"])
+            for ik, smi in zip(df_tmp.loc[df_tmp["bin"] == 0, "inchikey"],
+                               df_tmp.loc[df_tmp["bin"] == 0, "smiles"]):
+                negatives.setdefault(ik, smi)
+        negatives = {ik: s for ik, s in negatives.items() if ik not in actives}
+        pathogen_actives[pathogen] = actives
+        pathogen_negatives[pathogen] = negatives
+    n_neg = sum(len(v) for v in pathogen_negatives.values())
+    print(f"  {sum(len(s) for s in pathogen_actives.values()):,} active and {n_neg:,} "
+          f"proven-negative InChIKeys across {len(pathogen_actives)} pathogens")
+    return pathogen_actives, pathogen_negatives
 
-        df = dedup_by_inchikey(df, row["name"])
-        df.to_csv(out_path, index=False)
 
-    print(f"Datasets written to {OUT_DIR}")
+def _decoy_rows(df: pd.DataFrame, decoys: dict, pathogen_actives: set, existing_iks: set) -> list[tuple]:
+    """Return (inchikey, canonical_smiles) decoy candidates for a dataset's actives,
+    excluding pathogen actives and InChIKeys already present. Sorted for reproducibility."""
+    out: dict[str, str] = {}
+    for active_ik in df.loc[df["bin"] == 1, "inchikey"].dropna().unique():
+        for decoy_smi in decoys.get(active_ik, []):
+            canon, ik = smiles_to_inchikey(decoy_smi)
+            if ik is None or ik in pathogen_actives or ik in existing_iks:
+                continue
+            out.setdefault(ik, canon)
+    return sorted(out.items())
 
 
-# ---------------------------------------------------------------------------
-# Step 5 — augment high-ratio datasets with decoys
-# ---------------------------------------------------------------------------
-
-def augment_datasets(
-    metadata: pd.DataFrame,
-    decoys: dict[str, list[str]],
-) -> pd.DataFrame:
+def augment_datasets(metadata: pd.DataFrame, decoys_path: str) -> pd.DataFrame:
     meta = metadata.copy()
 
-    # The extracted CSVs are now InChIKey-deduplicated, so recompute compounds/positives/
-    # ratio (and inactives) from the actual rows. This mainly affects PubChem datasets and
-    # also sets the ratio used by the high-ratio augmentation gate below.
+    # Recompute counts from the deduped files (mainly matters for PubChem and sets the
+    # ratio used by the balancing gate below).
     print("Recomputing compound counts from deduped datasets...")
-    for idx, row in meta[meta["keep"]].iterrows():
+    for idx, row in meta.iterrows():
         fpath = os.path.join(OUT_DIR, row["pathogen"], f"{row['name']}.csv")
         if not os.path.exists(fpath):
             continue
-        df_tmp = pd.read_csv(fpath, usecols=["smiles", "bin"])
-        n_comp = len(df_tmp)
-        n_pos = int((df_tmp["bin"] == 1).sum())
+        b = pd.read_csv(fpath, usecols=["bin"])["bin"]
+        n_comp = len(b)
+        n_pos = int((b == 1).sum())
         meta.at[idx, "compounds"] = n_comp
         meta.at[idx, "positives"] = n_pos
         meta.at[idx, "inactives"] = n_comp - n_pos
         meta.at[idx, "ratio"] = round(n_pos / n_comp, 3) if n_comp else 0.0
 
-    meta["decoys"] = 0
+    meta["added_negatives"] = 0
+    meta["added_decoys"] = 0
     meta["final_ratio"] = meta["ratio"]
 
-    # Build per-pathogen set of active-compound InChIKeys across all extracted datasets,
-    # so decoys that are known actives in any assay of the same pathogen are excluded.
-    print("Building per-pathogen active InChIKey sets for decoy filtering...")
-    pathogen_actives: dict[str, set[str]] = {}
-    for pathogen, group in meta[meta["keep"]].groupby("pathogen"):
-        active_set: set[str] = set()
-        for name in group["name"]:
-            fpath = os.path.join(OUT_DIR, pathogen, f"{name}.csv")
-            if os.path.exists(fpath):
-                df_tmp = pd.read_csv(fpath, usecols=["smiles", "bin"])
-                for smi in df_tmp.loc[df_tmp["bin"] == 1, "smiles"]:
-                    _, ik = smiles_to_inchikey(smi)
-                    if ik is not None:
-                        active_set.add(ik)
-        pathogen_actives[pathogen] = active_set
-    total_actives = sum(len(s) for s in pathogen_actives.values())
-    print(f"  {total_actives:,} unique active InChIKeys across {len(pathogen_actives)} pathogens")
+    pathogen_actives, pathogen_negatives = _build_pathogen_pools(meta)
 
-    high_mask = (meta["ratio"] > HIGH_RATIO_THRESHOLD) & meta["keep"]
-    print(f"Augmenting {high_mask.sum()} datasets with ratio > {HIGH_RATIO_THRESHOLD}")
+    # Decoy fallback is loaded lazily on first shortfall.
+    _decoy_cache: dict = {}
 
-    for idx, row in tqdm(meta[high_mask].iterrows(), total=high_mask.sum(), desc="Augmenting datasets", unit="dataset"):
+    def get_decoys() -> dict:
+        if "map" not in _decoy_cache:
+            _decoy_cache["map"] = load_decoys(decoys_path)
+        return _decoy_cache["map"]
+
+    high_mask = meta["ratio"] > BALANCE_RATIO
+    print(f"Balancing {int(high_mask.sum())} datasets with ratio > {BALANCE_RATIO} down to {BALANCE_RATIO}")
+
+    for idx, row in tqdm(meta[high_mask].iterrows(), total=int(high_mask.sum()), desc="Balancing datasets", unit="dataset"):
         out_path = os.path.join(OUT_DIR, row["pathogen"], f"{row['name']}.csv")
         df = pd.read_csv(out_path)
-        df["decoy"] = False
 
         n_pos = int((df["bin"] == 1).sum())
         n_total = len(df)
-        n_needed = int(n_pos / TARGET_RATIO) - n_total
-
-        pathogen_active_iks = pathogen_actives.get(row["pathogen"], set())
-        # sorted() — set iteration order depends on PYTHONHASHSEED, so without
-        # this the pre-shuffle order varies across runs and the seeded shuffle
-        # ends up non-reproducible.
-        pool = sorted({
-            decoy_smi
-            for active_smi in df.loc[df["bin"] == 1, "smiles"]
-            for active_ik in [smiles_to_inchikey(active_smi)[1]]
-            if active_ik is not None
-            if active_ik in decoys
-            for decoy_smi in decoys[active_ik]
-            for decoy_ik in [smiles_to_inchikey(decoy_smi)[1]]
-            if decoy_ik is not None
-            if decoy_ik not in pathogen_active_iks
-        })
-
-        if not pool:
-            print(f"  [WARN] {row['name']}: no decoys available, skipping augmentation")
-            df.drop(columns=["decoy"]).to_csv(out_path, index=False)
+        n_needed = int(round(n_pos / BALANCE_RATIO)) - n_total
+        if n_needed <= 0:
             continue
 
-        n_sample = min(n_needed, len(pool))
+        existing_iks = set(df["inchikey"].dropna())
 
-        # InChIKeys already present in the dataset — used to filter decoys
-        existing_iks = set()
-        for smi in df["smiles"]:
-            _, ik = smiles_to_inchikey(smi)
-            if ik is not None:
-                existing_iks.add(ik)
+        # 1) proven negatives from the pathogen pool, not already in the dataset
+        neg_pool = sorted(
+            (ik, smi) for ik, smi in pathogen_negatives.get(row["pathogen"], {}).items()
+            if ik not in existing_iks
+        )
+        random.shuffle(neg_pool)
+        selected = neg_pool[:n_needed]
+        existing_iks.update(ik for ik, _ in selected)
+        n_neg = len(selected)
 
-        random.shuffle(pool)
-        selected = []
-        n_invalid = 0
-        n_duplicate = 0
-        for smi in pool:
-            if len(selected) >= n_sample:
-                break
-            canon, ik = smiles_to_inchikey(smi)
-            if ik is None:
-                n_invalid += 1
-                continue
-            if ik in existing_iks:
-                n_duplicate += 1
-                continue
-            selected.append(canon)  # store canonical SMILES, IK-unique
-            existing_iks.add(ik)
+        # 2) decoy fallback for any remaining shortfall
+        n_decoy = 0
+        if n_needed - n_neg > 0:
+            decoys = get_decoys()
+            if decoys:
+                pool = _decoy_rows(df, decoys, pathogen_actives.get(row["pathogen"], set()), existing_iks)
+                random.shuffle(pool)
+                decoy_sel = pool[: n_needed - n_neg]
+                selected += decoy_sel
+                n_decoy = len(decoy_sel)
 
-        if n_duplicate:
-            print(f"  [INFO] {row['name']}: skipped {n_duplicate} decoys already present in dataset")
+        if not selected:
+            print(f"  [WARN] {row['name']}: no proven negatives or decoys available, left unbalanced")
+            continue
 
-        if n_invalid:
-            print(f"  [WARN] {row['name']}: dropped {n_invalid} invalid decoy SMILES")
-        n_sample = len(selected)
+        achieved = round(n_pos / (n_total + len(selected)), 3)
+        if len(selected) < n_needed:
+            print(f"  [WARN] {row['name']}: needed {n_needed}, added {n_neg} negatives "
+                  f"+ {n_decoy} decoys; achieved ratio {achieved} (target {BALANCE_RATIO})")
 
-        achieved = round(n_pos / (n_total + n_sample), 3)
-        if n_sample < n_needed:
-            print(
-                f"  [WARN] {row['name']}: pool has {len(pool)} decoys, "
-                f"needed {n_needed}; achieved ratio {achieved} (target {TARGET_RATIO})"
-            )
-
+        df["added_negative"] = False
         new_rows = pd.DataFrame({
-            "smiles": selected,
+            "inchikey": [ik for ik, _ in selected],
+            "smiles": [smi for _, smi in selected],
             "bin": 0,
-            "decoy": True,
+            "added_negative": True,
         })
         pd.concat([df, new_rows], ignore_index=True).to_csv(out_path, index=False)
 
-        meta.at[idx, "decoys"] = n_sample
+        meta.at[idx, "added_negatives"] = n_neg
+        meta.at[idx, "added_decoys"] = n_decoy
         meta.at[idx, "final_ratio"] = achieved
 
     for idx, row in meta.iterrows():
         path = os.path.join(OUT_DIR, row["pathogen"], f"{row['name']}.csv")
         if os.path.exists(path):
-            meta.at[idx, "final_compounds"] = len(pd.read_csv(path))
+            meta.at[idx, "final_compounds"] = len(pd.read_csv(path, usecols=["bin"]))
         else:
-            meta.at[idx, "final_compounds"] = row["compounds"] + row["decoys"]
+            meta.at[idx, "final_compounds"] = row["compounds"] + row["added_negatives"] + row["added_decoys"]
     return meta
 
 
@@ -438,15 +350,9 @@ def augment_datasets(
 def main(seed: int = RANDOM_SEED) -> None:
     random.seed(seed)
     metadata = load_metadata(CHEMBL_METADATA_PATH, PUBCHEM_METADATA_PATH)
-    metadata = flag_chembl_duplicates(metadata)
-    decoys = load_decoys(DECOYS_PATH)
     extract_datasets(metadata)
-    enriched = augment_datasets(metadata, decoys)
+    enriched = augment_datasets(metadata, DECOYS_PATH)
     enriched = enriched.sort_values("pathogen").reset_index(drop=True)
-    n_dropped = (~enriched["keep"]).sum()
-    enriched = enriched[enriched["keep"]].drop(columns=["keep"]).reset_index(drop=True)
-    if n_dropped:
-        print(f"Dropped {n_dropped} keep=False dataset(s) from metadata")
     os.makedirs(os.path.dirname(META_OUT_PATH), exist_ok=True)
     enriched.to_csv(META_OUT_PATH, index=False)
     print(f"Saved enriched metadata ({len(enriched)} datasets) to {META_OUT_PATH}")

@@ -35,7 +35,6 @@ REPO_ROOT = os.path.abspath(os.path.join(root, ".."))
 sys.path.append(os.path.join(root, "..", "src"))
 
 from default import DESCRIPTORS, N_FOLDS, RANDOM_SEED
-from model_name import compute_model_name
 
 METADATA_PATH = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
 DATASETS_DIR  = os.path.join(REPO_ROOT, "output", "07_datasets")
@@ -130,7 +129,7 @@ def main(pathogens: list | None) -> None:
         meta = meta[meta["pathogen"].isin(pathogens)].reset_index(drop=True)
 
     # Precompute model names for all rows (needed in both phases)
-    model_name_map = {task_id: compute_model_name(meta, task_id) for task_id in meta.index}
+    model_name_map = dict(zip(meta.index, meta["name"].astype(str)))  # model name = dataset name
 
     # -----------------------------------------------------------------------
     # Phase 1: CV + final models
@@ -156,6 +155,15 @@ def main(pathogens: list | None) -> None:
             df     = pd.read_csv(os.path.join(DATASETS_DIR, pathogen, f"{name}.csv"))
             smiles = df["smiles"].tolist()
             y      = df["bin"].tolist()
+
+            # Skip datasets that cannot support stratified N-fold CV (too few of a class,
+            # or degenerate all-active/all-inactive).
+            n_pos = int(sum(y))
+            n_neg = len(y) - n_pos
+            if min(n_pos, n_neg) < N_FOLDS:
+                print(f"  [SKIP] min class size {min(n_pos, n_neg)} < {N_FOLDS} folds "
+                      f"({n_pos} active, {n_neg} inactive) — not trainable")
+                continue
 
             if not report_done:
                 run_cv(smiles, y, pathogen, name, model_name)

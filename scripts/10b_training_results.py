@@ -6,11 +6,11 @@ dataset along x):
   (a) AUROC bars with cross-fold std error bars
   (b) Out-of-fold rank-score distributions (boxplot + jittered scatter) for
       actives vs inactives, with the decision_cutoff_rank overlaid as a dashed line.
-  (c) Training-set composition (log scale): grouped bars for actives, inactives
-      and decoys per dataset.
+  (c) Training-set composition (log scale): grouped bars for actives, original
+      inactives, and added negatives (proven negatives + any decoy fallback) per dataset.
   (d) Final aggregate weight bars
 
-In panels (a) and (d) a white bar marks datasets that include decoys.
+In panels (a) and (d) a white bar marks datasets balanced with added negatives.
 
 Inputs:
   - output/10_reports/10_reports.csv
@@ -28,6 +28,7 @@ import argparse
 import json
 import math
 import os
+import sys
 
 import numpy as np
 import pandas as pd
@@ -37,14 +38,14 @@ from stylia import ArticleColors, CategoricalPalette, ErsiliaColors, save_figure
 
 
 root = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(os.path.join(root, "..", "src"))
+from default import RANDOM_SEED  # noqa: E402
 
 REPORT_PATH   = os.path.join(root, "..", "output", "10_reports", "10_reports.csv")
 FOLDS_DIR     = os.path.join(root, "..", "output", "09_reports")
 PATHOGENS     = os.path.join(root, "..", "config", "pathogens.csv")
 OUT_DIR       = os.path.join(root, "..", "output", "10_reports", "plots")
 os.makedirs(OUT_DIR, exist_ok=True)
-
-RANDOM_SEED = 42
 
 
 def _load_oof_rank(pathogen: str, model_name: str):
@@ -85,10 +86,11 @@ def plot_pathogen(report_pathogen: pd.DataFrame, pathogen: str, pathogen_name: s
     ax.set_xlim([-0.7, n - 0.3])
     aurocs_mean = report_pathogen["auroc_mean"].tolist()
     aurocs_std  = report_pathogen["auroc_std"].tolist()
-    has_decoys  = (report_pathogen["n_decoys"] > 0).tolist()
+    n_added_all = report_pathogen["n_added_negatives"] + report_pathogen["n_added_decoys"]
+    has_added   = (n_added_all > 0).tolist()
     auroc_fill  = pal.get(2)[1]
     for i in range(n):
-        face = "white" if has_decoys[i] else auroc_fill
+        face = "white" if has_added[i] else auroc_fill
         ax.bar(i, aurocs_mean[i], color=face, ec="k", lw=0.7)
         ax.plot([i, i],
                 [aurocs_mean[i] - aurocs_std[i], aurocs_mean[i] + aurocs_std[i]],
@@ -147,7 +149,7 @@ def plot_pathogen(report_pathogen: pd.DataFrame, pathogen: str, pathogen_name: s
     ax.legend(
         handles=[
             Patch(facecolor=nc.crimson, edgecolor="none", label="Actives"),
-            Patch(facecolor=nc.silver,  edgecolor="none", label="Inactives + decoys"),
+            Patch(facecolor=nc.silver,  edgecolor="none", label="Inactives (incl. added)"),
         ],
         fontsize=5, loc="lower right", frameon=True, framealpha=0.85,
         handlelength=1.0, handletextpad=0.4, borderpad=0.3,
@@ -162,24 +164,24 @@ def plot_pathogen(report_pathogen: pd.DataFrame, pathogen: str, pathogen_name: s
     ax.set_yscale("log")
     ax.set_xlim([-0.7, n - 0.3])
     n_pos   = report_pathogen["n_positives"].tolist()
-    n_dec   = report_pathogen["n_decoys"].tolist()
+    n_added = n_added_all.tolist()
     n_inact = (report_pathogen["n_compounds"]
                - report_pathogen["n_positives"]
-               - report_pathogen["n_decoys"]).tolist()
+               - n_added_all).tolist()
     top = 10 ** math.ceil(math.log10(max(report_pathogen["n_compounds"])))
     ax.set_ylim([1, top])
     bw = 0.27
     for i in range(n):
         for off, val, col in ((-bw, n_pos[i],   nc.crimson),
                               (0.0, n_inact[i], nc.cobalt),
-                              (bw,  n_dec[i],   "white")):
+                              (bw,  n_added[i], "white")):
             if val > 0:
                 ax.bar(i + off, val, width=bw, color=col, ec="k", lw=0.7)
     ax.legend(
         handles=[
             Patch(facecolor=nc.crimson, edgecolor="k", lw=0.5, label="Actives"),
             Patch(facecolor=nc.cobalt,  edgecolor="k", lw=0.5, label="Inactives"),
-            Patch(facecolor="white",    edgecolor="k", lw=0.5, label="Decoys"),
+            Patch(facecolor="white",    edgecolor="k", lw=0.5, label="Added negatives"),
         ],
         fontsize=5, loc="upper right", ncol=3, frameon=True, framealpha=0.85,
         handlelength=1.0, handletextpad=0.4, borderpad=0.3, columnspacing=0.8,
@@ -188,7 +190,7 @@ def plot_pathogen(report_pathogen: pd.DataFrame, pathogen: str, pathogen_name: s
     # (d) Final weights
     ax = axs.next()
     ax.set_xlabel("")
-    ax.set_ylabel("Average weight (w1-w7)")
+    ax.set_ylabel("Average weight (w1-w6)")
     final_weights = report_pathogen["final_weight"].tolist()
     w_min, w_max = min(final_weights), max(final_weights)
     y_lo = max(0.0, math.floor(w_min * 10) / 10)
@@ -197,7 +199,7 @@ def plot_pathogen(report_pathogen: pd.DataFrame, pathogen: str, pathogen_name: s
     ax.set_xlim([-0.7, n - 0.3])
     weight_fill = ec.plum
     for i in range(n):
-        face = "white" if has_decoys[i] else weight_fill
+        face = "white" if has_added[i] else weight_fill
         ax.bar(i, final_weights[i], color=face, ec="k", lw=0.7)
     ax.set_xticks(x)
     if n > 20:

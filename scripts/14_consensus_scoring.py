@@ -1,12 +1,12 @@
 """
 Step 14 — Consensus scoring of DrugBank compounds per pathogen.
 
-Reads per-pathogen rank matrices from output/12_drugbank/{pathogen}.csv
-and computes a weighted consensus score per compound using 8 weights:
-  W1–W7: model quality weights from 10_reports.csv
-  W8:    0 at or below decision_cutoff_rank, linear 0→1 above it
+Reads per-pathogen rank matrices from output/12_drugbank/rank/{pathogen}.csv
+and computes a weighted consensus score per compound using 7 weights:
+  W1–W6: model quality weights from 10_reports.csv
+  W7:    0 at or below decision_cutoff_rank, linear 0→1 above it (per-compound)
 
-weight[i,m] = average(W1..W7, W8[i,m], weights=W_WEIGHTS)
+weight[i,m] = average(W1..W6, W7[i,m], weights=W_WEIGHTS)
 score[i]    = sum_m(prob_rank[i,m] * weight[i,m]) / sum_m(weight[i,m])
 
 A tanh transformation is then applied to restore the IQR of the consensus scores
@@ -48,8 +48,8 @@ REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 DEFAULT_IN_DIR  = os.path.join(REPO_ROOT, "output", "12_drugbank")
 DEFAULT_OUT_DIR = os.path.join(REPO_ROOT, "output", "14_consensus")
 REPORTS_PATH    = os.path.join(REPO_ROOT, "output", "10_reports", "10_reports.csv")
-W_COLS    = ["w1", "w2", "w3", "w4", "w5", "w6", "w7"]
-W_WEIGHTS = np.ones(len(W_COLS) + 1)  # one per w1..w7 + w8; change here to reweight
+W_COLS    = ["w1", "w2", "w3", "w4", "w5", "w6"]  # quality weights from 10_reports
+W_WEIGHTS = np.ones(len(W_COLS) + 1)  # + w7 (per-compound cutoff ramp); change here to reweight
 
 # Saturating-exponential fit for IQR shrinking factor vs number of models.
 # S(M) = 1 + _TANH_A*(1-exp(-M/_TANH_TAU)),  k(M) = 2*S(M)
@@ -61,7 +61,7 @@ _TANH_A   = float(_fit["a"])
 _TANH_TAU = float(_fit["tau"])
 
 
-def _compute_w8(prob_ranks: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
+def _compute_w7(prob_ranks: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
     """Linear weight above decision cutoff: 0 at or below cutoff, 1 at prob_rank=1."""
     c = np.clip(cutoffs[np.newaxis, :], 0.0, 1.0 - 1e-9)
     return np.where(
@@ -73,23 +73,31 @@ def _compute_w8(prob_ranks: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
 
 def _score(prob_ranks: np.ndarray, w_quality: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
     # prob_ranks : (n_compounds, n_models) — normalized rank of each compound under each model
-    # w_quality  : (n_models, 7)          — model-level quality weights (w1–w7) from 10_reports
-    # cutoffs    : (n_models,)            — decision_cutoff_rank per model, used to compute w8
+    # w_quality  : (n_models, 6)          — model-level quality weights (w1–w6) from 10_reports
+    # cutoffs    : (n_models,)            — decision_cutoff_rank per model, used to compute w7
 
-    # w8 is the only per-compound weight: it rewards compounds ranked above the decision cutoff
-    w8 = _compute_w8(prob_ranks, cutoffs)  # (n_compounds, n_models)
+    # w7 is the only per-compound weight: it rewards compounds ranked above the decision cutoff
+    w7 = _compute_w7(prob_ranks, cutoffs)  # (n_compounds, n_models)
 
-    # Stack all 8 weights into a single tensor so we can average them in one call
+    # Stack all 7 weights into a single tensor so we can average them in one call
     n_compounds, n_models = prob_ranks.shape
     w_all = np.empty((n_compounds, n_models, len(W_WEIGHTS)))
-    w_all[:, :, :len(W_COLS)] = w_quality  # w1–w7: same for every compound, broadcast over axis 0
-    w_all[:, :,  len(W_COLS)] = w8         # w8: varies per compound
+    w_all[:, :, :len(W_COLS)] = w_quality  # w1–w6: same for every compound, broadcast over axis 0
+    w_all[:, :,  len(W_COLS)] = w7         # w7: varies per compound
 
-    # Collapse the 8 weight dimensions into one scalar per (compound, model)
+    # Collapse the 7 weight dimensions into one scalar per (compound, model)
     w = np.average(w_all, axis=-1, weights=W_WEIGHTS)  # (n_compounds, n_models)
 
-    # Weighted average of prob_ranks across models for each compound
-    return (prob_ranks * w).sum(axis=1) / w.sum(axis=1)  # (n_compounds,)
+    # Weighted average of prob_ranks across models for each compound.
+    # Guard compounds where every weight is 0 (all models rank at/below their cutoff and
+    # all quality weights are 0): fall back to the plain mean rather than 0/0 = NaN.
+    denom = w.sum(axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        score = (prob_ranks * w).sum(axis=1) / denom
+    zero = denom == 0.0
+    if zero.any():
+        score[zero] = prob_ranks[zero].mean(axis=1)
+    return score  # (n_compounds,)
 
 
 def _score_unweighted(prob_ranks: np.ndarray) -> np.ndarray:
@@ -120,7 +128,7 @@ def _apply_transform(df: pd.DataFrame, k_consensus: float, k_excluded: float) ->
 
 
 def run(pathogen: str, in_dir: str, reports_df: pd.DataFrame, out_path: str) -> None:
-    src = os.path.join(in_dir, f"{pathogen}.csv")
+    src = os.path.join(in_dir, "rank", f"{pathogen}.csv")
     if not os.path.isfile(src):
         print(f"  [SKIP] {pathogen}: {src} not found")
         return
@@ -141,6 +149,12 @@ def run(pathogen: str, in_dir: str, reports_df: pd.DataFrame, out_path: str) -> 
             "Decide how to handle these (drop / impute / exclude pairwise) before scoring."
         )
     prob_ranks = df[model_cols].values
+    if prob_ranks.min() < -1e-6 or prob_ranks.max() > 1.0 + 1e-6:
+        raise ValueError(
+            f"[{pathogen}] predictions are not on the [0,1] rank scale "
+            f"(min={prob_ranks.min():.3f}, max={prob_ranks.max():.3f}). "
+            f"14 requires the 'rank' predict type ({src})."
+        )
     w_quality  = np.array([model_reports.loc[m, W_COLS].values for m in model_cols], dtype=float)
     cutoffs    = np.array([model_reports.loc[m, "decision_cutoff_rank"] for m in model_cols], dtype=float)
 

@@ -8,13 +8,14 @@ For each pathogen, reads:
   - output/10_reports/10_discarded_models.csv — models below MIN_AUROC
 
 Outputs per pathogen in output/17_quality_checks/{pathogen}/:
-  all_smiles_no_decoys.csv — unique InChIKeys excluding added decoys
+  all_smiles_no_added.csv  — unique InChIKeys excluding added negatives
                              inchikey | canonical_smiles | n_active | n_inactive | found_in | in_drugbank
-  all_smiles_decoys.csv    — same but including added decoys, with quality flags
-                             + n_decoy | label_conflict | decoy_inactive_dup | intra_dataset_conflicts
+  all_smiles_with_added.csv — same but including added negatives, with quality flags
+                             + n_added_negative | label_conflict | added_inactive_overlap | intra_dataset_conflicts
   data_summary.csv         — one row per dataset: counts + per-dataset label/DrugBank flags
-                             name | source | label | n_compounds | n_positives | n_decoys | final_ratio
-                             | active_label_conflict | inactive_label_conflict | n_drugbank_overlap
+                             name | source | label | n_compounds | n_positives | n_added_negatives
+                             | n_added_decoys | final_ratio | active_label_conflict
+                             | inactive_label_conflict | n_drugbank_overlap
   model_summary.csv        — one row per model (kept + discarded)
                              name | model_name | n_compounds | n_positives | auroc_mean | auroc_std
                              | final_weight | fold_unstable | low_weight | discarded
@@ -23,9 +24,9 @@ Top-level output:
   output/17_quality_checks/summary.csv — one row per pathogen
 
 Quality flags:
-  label_conflict      — compound is active in ≥1 dataset AND inactive/decoy in ≥1 dataset
-  decoy_inactive_dup  — added decoy also appears as a real inactive
-  in_drugbank         — training compound appears in DrugBank screening set
+  label_conflict          — compound is active in ≥1 dataset AND inactive/added in ≥1 dataset
+  added_inactive_overlap  — an added negative also appears as a real (original) inactive
+  in_drugbank             — training compound appears in DrugBank screening set
   fold_unstable       — model auroc_std > FOLD_UNSTABLE_AUROC_STD (src/default.py)
   low_weight          — model final_weight < LOW_WEIGHT_THRESHOLD (src/default.py)
   discarded           — model excluded by MIN_AUROC filter in script 10
@@ -101,7 +102,7 @@ def collect_pathogen(
     Collect all compound records for a pathogen across all its datasets.
 
     Returns:
-        records   — inchikey -> {canonical_smiles, datasets: {name -> {n_active, n_inactive, n_decoy}}}
+        records   — inchikey -> {canonical_smiles, datasets: {name -> {n_active, n_inactive, n_added}}}
         n_invalid — count of SMILES that could not be parsed
     """
     records: dict[str, dict] = {}
@@ -112,12 +113,12 @@ def collect_pathogen(
         if not os.path.exists(csv_path):
             continue
         df = pd.read_csv(csv_path)
-        has_decoy_col = "decoy" in df.columns
+        has_added_col = "added_negative" in df.columns
 
         for _, row in df.iterrows():
             smi = str(row["smiles"])
             bin_val = int(row["bin"])
-            is_decoy = bool(row["decoy"]) if has_decoy_col else False
+            is_added = bool(row["added_negative"]) if has_added_col else False
 
             result = _process_smiles(smi)
             if result is None:
@@ -130,11 +131,11 @@ def collect_pathogen(
             rec = records[key]
 
             if name not in rec["datasets"]:
-                rec["datasets"][name] = {"n_active": 0, "n_inactive": 0, "n_decoy": 0}
+                rec["datasets"][name] = {"n_active": 0, "n_inactive": 0, "n_added": 0}
             ds = rec["datasets"][name]
 
-            if is_decoy:
-                ds["n_decoy"] += 1
+            if is_added:
+                ds["n_added"] += 1
             elif bin_val == 1:
                 ds["n_active"] += 1
             else:
@@ -145,7 +146,7 @@ def collect_pathogen(
 
 def build_df(
     records: dict[str, dict],
-    include_decoys: bool,
+    include_added: bool,
     drugbank_keys: set[str],
 ) -> pd.DataFrame:
     rows = []
@@ -154,10 +155,10 @@ def build_df(
 
         n_active   = sum(ds["n_active"]   for ds in datasets.values())
         n_inactive = sum(ds["n_inactive"] for ds in datasets.values())
-        n_decoy    = sum(ds["n_decoy"]    for ds in datasets.values())
+        n_added    = sum(ds["n_added"]    for ds in datasets.values())
         n_orig     = n_active + n_inactive
 
-        if not include_decoys and n_orig == 0:
+        if not include_added and n_orig == 0:
             continue
 
         row: dict = {
@@ -169,22 +170,22 @@ def build_df(
             "in_drugbank":      key in drugbank_keys,
         }
 
-        if include_decoys:
+        if include_added:
             intra = [
                 name for name, ds in datasets.items()
-                if (ds["n_active"] > 0 and (ds["n_inactive"] + ds["n_decoy"]) > 0)
-                or (ds["n_decoy"] > 0 and ds["n_inactive"] > 0)
+                if (ds["n_active"] > 0 and (ds["n_inactive"] + ds["n_added"]) > 0)
+                or (ds["n_added"] > 0 and ds["n_inactive"] > 0)
             ]
-            row["n_decoy"]                 = n_decoy
-            row["label_conflict"]          = n_active > 0 and (n_inactive + n_decoy) > 0
-            row["decoy_inactive_dup"]      = n_decoy > 0 and n_inactive > 0
+            row["n_added_negative"]        = n_added
+            row["label_conflict"]          = n_active > 0 and (n_inactive + n_added) > 0
+            row["added_inactive_overlap"]  = n_added > 0 and n_inactive > 0
             row["intra_dataset_conflicts"] = ";".join(sorted(intra)) if intra else ""
 
         rows.append(row)
 
-    if include_decoys:
-        cols = ["inchikey", "canonical_smiles", "n_active", "n_inactive", "n_decoy",
-                "label_conflict", "decoy_inactive_dup", "intra_dataset_conflicts",
+    if include_added:
+        cols = ["inchikey", "canonical_smiles", "n_active", "n_inactive", "n_added_negative",
+                "label_conflict", "added_inactive_overlap", "intra_dataset_conflicts",
                 "found_in", "in_drugbank"]
     else:
         cols = ["inchikey", "canonical_smiles", "n_active", "n_inactive",
@@ -233,7 +234,7 @@ def build_data_summary(
             this = ds[name]
             others = [v for k, v in ds.items() if k != name]
             other_active   = sum(v["n_active"]             for v in others)
-            other_inactive = sum(v["n_inactive"] + v["n_decoy"] for v in others)
+            other_inactive = sum(v["n_inactive"] + v["n_added"] for v in others)
             if this["n_active"] > 0 and other_inactive > 0:
                 n_active_conflict += 1
             if this["n_inactive"] > 0 and other_active > 0:
@@ -246,7 +247,8 @@ def build_data_summary(
             "label":                   m.get("label", ""),
             "n_compounds":             int(m.get("final_compounds", m.get("compounds", 0))),
             "n_positives":             int(m.get("positives", 0)),
-            "n_decoys":                int(m.get("decoys", 0)),
+            "n_added_negatives":       int(m.get("added_negatives", 0)),
+            "n_added_decoys":          int(m.get("added_decoys", 0)),
             "final_ratio":             round(float(m.get("final_ratio", 0.0)), 4),
             "active_label_conflict":   n_active_conflict,
             "inactive_label_conflict": n_inactive_conflict,
@@ -300,11 +302,11 @@ def run(
     out_path = os.path.join(OUT_DIR, pathogen)
     os.makedirs(out_path, exist_ok=True)
 
-    df_nd = build_df(records, include_decoys=False, drugbank_keys=drugbank_keys)
-    df_nd.to_csv(os.path.join(out_path, "all_smiles_no_decoys.csv"), index=False)
+    df_nd = build_df(records, include_added=False, drugbank_keys=drugbank_keys)
+    df_nd.to_csv(os.path.join(out_path, "all_smiles_no_added.csv"), index=False)
 
-    df_wd = build_df(records, include_decoys=True, drugbank_keys=drugbank_keys)
-    df_wd.to_csv(os.path.join(out_path, "all_smiles_decoys.csv"), index=False)
+    df_wd = build_df(records, include_added=True, drugbank_keys=drugbank_keys)
+    df_wd.to_csv(os.path.join(out_path, "all_smiles_with_added.csv"), index=False)
 
     ds_df = build_data_summary(pathogen, dataset_names, meta_df, df_wd, records, reports_df)
     ds_df.to_csv(os.path.join(out_path, "data_summary.csv"), index=False)
@@ -320,11 +322,12 @@ def run(
     n_low_weight     = int(ms_df["low_weight"].sum())
     auroc_vals       = ms_df.loc[ms_df["discarded"] == False, "auroc_mean"].dropna()
     auroc_median     = round(float(auroc_vals.median()), 4) if len(auroc_vals) > 0 else float("nan")
-    n_decoys_total   = int(meta_df[meta_df["pathogen"] == pathogen]["decoys"].sum())
+    meta_p           = meta_df[meta_df["pathogen"] == pathogen]
+    n_added_total    = int(meta_p["added_negatives"].sum() + meta_p["added_decoys"].sum())
 
     print(
         f"[{pathogen}]  compounds={len(df_nd)}  actives={int(df_nd['n_active'].gt(0).sum())}  "
-        f"decoys={n_decoys_total}  drugbank_overlap={n_db_overlap}  label_conflicts={n_label_conflict}  |  "
+        f"added_negatives={n_added_total}  drugbank_overlap={n_db_overlap}  label_conflicts={n_label_conflict}  |  "
         f"models={n_models}  discarded={n_discarded}  auroc_median={auroc_median}  "
         f"fold_unstable={n_fold_unstable}  low_weight={n_low_weight}"
     )
@@ -335,7 +338,7 @@ def run(
         "n_compounds_unique": len(df_nd),
         "n_actives":          int(df_nd["n_active"].gt(0).sum()),
         "n_inactives":        int(df_nd["n_inactive"].gt(0).sum()),
-        "n_decoys":           n_decoys_total,
+        "n_added_negatives":  n_added_total,
         "n_drugbank_overlap": n_db_overlap,
         "n_label_conflicts":  n_label_conflict,
         "n_models":           n_models,

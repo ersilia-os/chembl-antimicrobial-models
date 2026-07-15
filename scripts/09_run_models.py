@@ -33,7 +33,6 @@ REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 sys.path.append(os.path.join(ROOT, "..", "src"))
 
 from default import DESCRIPTORS, N_FOLDS, RANDOM_SEED
-from model_name import compute_model_name
 
 METADATA_PATH = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
 DATASETS_DIR  = os.path.join(REPO_ROOT, "output", "07_datasets")
@@ -45,8 +44,8 @@ MODE = "slow"
 def run(task_id: int) -> None:
     meta = pd.read_csv(METADATA_PATH)
     row  = meta.iloc[task_id]
-    pathogen, name = row["pathogen"], row["name"]
-    model_name = compute_model_name(meta, task_id)
+    pathogen, name = row["pathogen"], str(row["name"])
+    model_name = name  # model files are keyed by the dataset name (unique per pathogen)
 
     print(f"[{task_id}] {pathogen}/{name} ({model_name})")
 
@@ -54,6 +53,15 @@ def run(task_id: int) -> None:
     df = pd.read_csv(dataset_path)
     smiles = df["smiles"].tolist()
     y      = df["bin"].tolist()
+
+    # Skip datasets that cannot support stratified N-fold CV (too few of a class, or
+    # degenerate all-active/all-inactive). These produce no report and no model.
+    n_pos = int(sum(y))
+    n_neg = len(y) - n_pos
+    if min(n_pos, n_neg) < N_FOLDS:
+        print(f"[SKIP] {pathogen}/{name}: min class size {min(n_pos, n_neg)} < {N_FOLDS} folds "
+              f"({n_pos} active, {n_neg} inactive) — not trainable")
+        return
 
     # 5-fold CV
     records = []

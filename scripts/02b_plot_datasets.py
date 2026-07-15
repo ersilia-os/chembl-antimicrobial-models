@@ -33,33 +33,28 @@ JITTER_STRENGTH = 0.18
 
 
 def _print_summary(chembl, pubchem):
-    def block(name, df):
+    def header(name, df):
         n_above = int((df["ratio"] > 0.5).sum())
         mean, std = df["ratio"].mean(), df["ratio"].std()
-        lab = df["label"].value_counts()
-        parts = [f"{int(lab.get(L, 0))} {L}s" for L in ["A", "B", "M", "G"] if L in lab.index]
         print(f"— {name}")
         print(f"— {df['pathogen'].nunique()} pathogens")
         print(f"— {len(df)} binarized datasets obtained from {name} antimicrobial tasks")
         print(f"— {n_above} datasets have ratio>0.5 ({mean:.2f}±{std:.2f})")
-        print(f"— {', '.join(parts[:-1])} and {parts[-1]}" if len(parts) > 1 else f"— {parts[0]}")
 
-    block("ChEMBL", chembl)
+    header("ChEMBL", chembl)
+    # ChEMBL pooled datasets are labelled by category: DR (dose-response) / SP (single-point)
+    lab = chembl["label"].value_counts()
+    print(f"— {', '.join(f'{int(v)} {k}' for k, v in lab.items())}")
     print()
-    block("PubChem", pubchem)
-
-    ids = set(pubchem["chembl_id"].dropna())
-    if ids:
-        pat = "|".join(map(str, ids))
-        n_super = int(chembl["name"].str.contains(pat, na=False, regex=True).sum())
-        print(f"— {n_super} ChEMBL datasets are superseded by PubChem assays")
+    header("PubChem", pubchem)
+    # PubChem organism datasets are either single assays or merged near-duplicate clusters
+    n_merged = int(pubchem["is_merged"].sum())
+    print(f"— {n_merged} merged and {len(pubchem) - n_merged} single-assay datasets")
 
 
 def main():
     chembl = pd.read_csv(CHEMBL_PATH)
     pubchem = pd.read_csv(PUBCHEM_PATH)
-    pubchem = pubchem[pubchem["label"] != "discarded"].copy()
-    pubchem = pubchem.rename(columns={"pathogen_code": "pathogen"})
 
     _print_summary(chembl, pubchem)
     print()
@@ -94,6 +89,13 @@ def main():
 
     chembl_pts  = _add_jitter(chembl)
     pubchem_pts = _add_jitter(pubchem)
+
+    # Unified dataset-type taxonomy for the type panel: ChEMBL pool category
+    # (DR/SP) and PubChem organism datasets split by merged vs single-assay.
+    chembl_pts["dtype"] = chembl_pts["label"]
+    pubchem_pts["dtype"] = np.where(
+        pubchem_pts["is_merged"], "PubChem (merged)", "PubChem (single)"
+    )
 
     stylia.set_format("slide")
     stylia.set_style("article")
@@ -147,18 +149,18 @@ def main():
     ax_d = axs.next()
     ax_d.sharey(ax_a)
     all_pts = pd.concat([chembl_pts, pubchem_pts], ignore_index=True)
-    label_order  = ["A", "B", "M", "G"]
-    label_colors = dict(zip(label_order, pal.get(len(label_order))))
-    label_counts = (
-        all_pts.groupby(["pathogen", "label"]).size().unstack(fill_value=0)
-        .reindex(columns=label_order, fill_value=0)
+    type_order  = ["DR", "SP", "PubChem (single)", "PubChem (merged)"]
+    type_colors = dict(zip(type_order, pal.get(len(type_order))))
+    type_counts = (
+        all_pts.groupby(["pathogen", "dtype"]).size().unstack(fill_value=0)
+        .reindex(columns=type_order, fill_value=0)
         .reindex(pathogen_order, fill_value=0)
     )
-    y = np.array([pathogen_to_y[p] for p in label_counts.index])
+    y = np.array([pathogen_to_y[p] for p in type_counts.index])
     left = np.zeros(len(y))
-    for L in label_order:
-        vals = label_counts[L].to_numpy()
-        ax_d.barh(y, vals, left=left, color=label_colors[L], label=L)
+    for t in type_order:
+        vals = type_counts[t].to_numpy()
+        ax_d.barh(y, vals, left=left, color=type_colors[t], label=t)
         left = left + vals
     ax_d.set_xlabel("Number of datasets")
     ax_d.set_ylabel("")

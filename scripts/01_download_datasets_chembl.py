@@ -1,100 +1,94 @@
 """
-Step 01 (ChEMBL) — Download ChEMBL representative datasets.
+Step 01 (ChEMBL) — Load ChEMBL stage4 signal-based pooled datasets.
 
-Downloads the selected binary datasets from the chembl-antimicrobial-tasks repo into
-data/raw/chembl/<pathogen>/.
+Consumes the *signal-based pooled* datasets produced by the rebuilt
+chembl-antimicrobial-tasks pipeline (output/stage4/<pathogen>/). Two pool
+families are ingested (decided 2026-07-13):
 
-Files downloaded per pathogen:
-  - 17_final_datasets.csv
-  - 19_final_datasets_metadata.csv
-  - 19_final_datasets.zip
-  - 20_general_datasets.csv  OR  20_general_no_pubchem_datasets.csv  (no_pubchem preferred)
-  - 20_general_datasets_middle.zip  OR  20_general_no_pubchem_datasets_middle.zip  (all pathogens)
-  - 20_general_datasets_high.zip    OR  20_general_no_pubchem_datasets_high.zip    (pfalciparum only)
+  - 25_pools/{DR,SP}/<pool_id>.csv.gz     grown pools (== the "modelled" pools;
+                                          25_pool_summary.csv lists them)
+  - 26_pools/{DR,SP}/<category>_catchall.csv.gz   low-data catch-all pools
+                                          (26_cv_summary.csv lists them)
 
-By default, files are copied from a local chembl-antimicrobial-tasks repo assumed to be
-in the same parent directory. Pass --eosvc to download from the remote EOS service instead.
+Both DR (dose-response) and SP (single-point) categories are kept. All pools
+present in 25_pools + 26_pools are retained (no extra quality filter — this is
+the "all modelled pools" selection; downstream 10a re-applies an AUROC filter).
+First-pass (23_pools) datasets are NOT used, even for pathogens whose growth
+step produced no 25 pools (hpylori, ngonorrhoeae) — strict 25+26 per decision.
 
-Produces data/processed/chembl/<pathogen>/01_chembl_datasets.csv with all datasets merged.
-Also produces data/processed/chembl/01_chembl_datasets_all.csv combining all pathogens.
+Each pooled dataset CSV has columns: inchikey, compound_chembl_id, smiles,
+value, unit, bin.
+
+Files are copied from a local chembl-antimicrobial-tasks repo assumed to be in
+the same parent directory. Pass --eosvc to download from the remote EOS service.
+
+Produces:
+  data/raw/chembl/<pathogen>/<pool_id>.csv.gz        (the pool data)
+  data/processed/chembl/<pathogen>/01_chembl_datasets.csv
+  data/processed/chembl/01_chembl_datasets_all.csv   (all pathogens merged)
 
 Usage:
     python scripts/01_download_datasets_chembl.py
     python scripts/01_download_datasets_chembl.py --eosvc
+    python scripts/01_download_datasets_chembl.py --pathogen mtuberculosis
 """
 
 import argparse
-import io
 import os
 import shutil
 import subprocess
 import sys
-import zipfile
 
 import pandas as pd
-from rdkit import Chem
-from rdkit.Chem.inchi import MolToInchiKey
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.join(ROOT, "..")
 sys.path.append(os.path.join(ROOT, "..", "src"))
 
-from default import (
-    CHEMBL_CSV_GENERAL,
-    CHEMBL_CSV_GENERAL_NO_PUBCHEM,
-    CHEMBL_ZIP_GENERAL,
-    CHEMBL_ZIP_GENERAL_HIGH,
-    CHEMBL_ZIP_GENERAL_NO_PUBCHEM,
-    CHEMBL_ZIP_GENERAL_NO_PUBCHEM_HIGH,
-    COL_BIN,
-    COL_SMILES,
-    G_ORG_DR,
-    G_ORG_SP,
-    PATHOGENS,
-)
-
-GENERAL_CSV_TO_ZIP = {
-    CHEMBL_CSV_GENERAL: CHEMBL_ZIP_GENERAL,
-    CHEMBL_CSV_GENERAL_NO_PUBCHEM: CHEMBL_ZIP_GENERAL_NO_PUBCHEM,
-}
-
-GENERAL_CSV_TO_HIGH_ZIP = {
-    CHEMBL_CSV_GENERAL: CHEMBL_ZIP_GENERAL_HIGH,
-    CHEMBL_CSV_GENERAL_NO_PUBCHEM: CHEMBL_ZIP_GENERAL_NO_PUBCHEM_HIGH,
-}
-
-PFALCIPARUM_GENERAL_LEVEL = "high"
+from default import COL_BIN, COL_SMILES, PATHOGENS  # noqa: E402
 
 REPO_NAME = "chembl-antimicrobial-tasks"
 TASKS_REPO_ROOT = os.path.join(REPO_ROOT, "..", REPO_NAME)
 
-# Non-general files — same for all pathogens, no no_pubchem variant
-FILES = [
-    "17_final_datasets.csv",
-    "19_final_datasets_metadata.csv",
-    "19_final_datasets.zip",
+# Upstream layout (relative to the tasks repo root)
+STAGE4 = "output/stage4"
+CATEGORIES = ["DR", "SP"]  # dose-response, single-point
+
+# Per-pathogen summary tables consumed to enumerate pools and pull metadata
+SUMMARY_25_POOLS = "25_pool_summary.csv"   # grown pools: pool_id, grown_auroc, ...
+SUMMARY_24_CV = "24_cv_summary.csv"        # first-pass CV: pool_id, youden_cutoff, modelled
+SUMMARY_23_POOLS = "23_pool_summary.csv"   # first-pass membership: pool_id, n_datasets
+SUMMARY_26_CV = "26_cv_summary.csv"        # catch-all pools: category, n_datasets, auroc, youden
+
+TARGET_TYPE = "ORGANISM"
+
+# Output metadata columns (kept compatible with the contract read by scripts 03/07a).
+META_COLUMNS = [
+    "pathogen", "source", "label", "assay_type", "n_assays", "name",
+    "activity_type", "unit", "target_type", "cutoff", "auroc",
+    "compounds", "positives", "ratio", "pool_step",
 ]
 
 
 def copy_from_repo(remote_path: str, local_path: str) -> bool:
+    """Copy a file from the sibling chembl-antimicrobial-tasks repo."""
     source = os.path.join(TASKS_REPO_ROOT, remote_path)
     if not os.path.exists(source):
-        print(f"Skipping {remote_path}: not found in local repo.")
+        print(f"  Skipping {remote_path}: not found in local repo.")
         return False
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
     shutil.copy2(source, local_path)
-    print(f"Copied {remote_path} -> {local_path}")
     return True
 
 
 def download_file(remote_path: str, local_path: str) -> bool:
+    """Download a file via eosvc from the chembl-antimicrobial-tasks remote."""
     env = os.environ.copy()
     env["EVC_REPO_NAME"] = REPO_NAME
     cmd = ["eosvc", "download", "--path", remote_path]
-    print(f"Downloading {remote_path} -> {local_path}")
     result = subprocess.run(cmd, env=env, cwd=REPO_ROOT, check=False)
     if result.returncode != 0:
-        print(f"Skipping {remote_path}: not found in the cloud.")
+        print(f"  Skipping {remote_path}: not found in the cloud.")
         return False
     remote_abs = os.path.join(REPO_ROOT, remote_path)
     os.makedirs(os.path.dirname(local_path), exist_ok=True)
@@ -102,193 +96,136 @@ def download_file(remote_path: str, local_path: str) -> bool:
     return True
 
 
+def _read_summary(transfer, pathogen: str, filename: str) -> pd.DataFrame | None:
+    """Transfer and read one stage4 per-pathogen summary CSV. None if absent."""
+    remote = f"{STAGE4}/{pathogen}/{filename}"
+    local = os.path.join(REPO_ROOT, "data", "raw", "chembl", pathogen, filename)
+    if not transfer(remote, local):
+        return None
+    return pd.read_csv(local)
+
+
+def _pool_stats(gz_path: str) -> tuple[int, int] | None:
+    """Return (n_compounds, n_positives) from a pooled dataset gz, or None."""
+    try:
+        df = pd.read_csv(gz_path, compression="gzip")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [WARN] could not read {os.path.basename(gz_path)}: {exc}")
+        return None
+    if COL_SMILES not in df.columns or COL_BIN not in df.columns:
+        print(f"  [WARN] {os.path.basename(gz_path)} missing '{COL_SMILES}'/'{COL_BIN}'.")
+        return None
+    return len(df), int((df[COL_BIN] == 1).sum())
+
+
+def _ingest_pool(
+    transfer, pathogen: str, category: str, pool_id: str, step: str,
+    auroc, cutoff, n_assays, raw_dir: str,
+) -> dict | None:
+    """Transfer one pool gz and build its metadata row. None if unavailable."""
+    remote = f"{STAGE4}/{pathogen}/{step}_pools/{category}/{pool_id}.csv.gz"
+    local = os.path.join(raw_dir, f"{pool_id}.csv.gz")
+    if not transfer(remote, local):
+        return None
+    stats = _pool_stats(local)
+    if stats is None:
+        return None
+    n_compounds, n_positives = stats
+    assay_type = "pool" if step == "25" else "catchall"
+    return {
+        "pathogen": pathogen,
+        "source": "chembl",
+        "label": category,
+        "assay_type": assay_type,
+        "n_assays": n_assays,
+        "name": pool_id,
+        "activity_type": pd.NA,   # pools mix activity types
+        "unit": pd.NA,
+        "target_type": TARGET_TYPE,
+        "cutoff": cutoff,          # youden score cutoff from CV (not an activity cutoff)
+        "auroc": round(float(auroc), 3) if pd.notna(auroc) else pd.NA,
+        "compounds": n_compounds,
+        "positives": n_positives,
+        "ratio": round(n_positives / n_compounds, 3) if n_compounds else pd.NA,
+        "pool_step": step,
+    }
+
+
+def _grown_pool_rows(transfer, pathogen: str, raw_dir: str) -> list[dict]:
+    """Enumerate 25 (grown) pools from 25_pool_summary and ingest each."""
+    summary = _read_summary(transfer, pathogen, SUMMARY_25_POOLS)
+    if summary is None or summary.empty:
+        return []
+    cv = _read_summary(transfer, pathogen, SUMMARY_24_CV)          # youden_cutoff
+    members = _read_summary(transfer, pathogen, SUMMARY_23_POOLS)  # n_datasets
+    cutoff_map, n_assays_map = {}, {}
+    if cv is not None:
+        cutoff_map = cv.set_index(["category", "pool_id"])["youden_cutoff"].to_dict()
+    if members is not None:
+        n_assays_map = members.set_index(["category", "pool_id"])["n_datasets"].to_dict()
+
+    rows = []
+    for _, r in summary.iterrows():
+        cat, pool_id = r["category"], r["pool_id"]
+        key = (cat, pool_id)
+        row = _ingest_pool(
+            transfer, pathogen, cat, pool_id, step="25",
+            auroc=r.get("grown_auroc"),
+            cutoff=cutoff_map.get(key, pd.NA),
+            n_assays=n_assays_map.get(key, pd.NA),
+            raw_dir=raw_dir,
+        )
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
+def _catchall_pool_rows(transfer, pathogen: str, raw_dir: str) -> list[dict]:
+    """Enumerate 26 (catch-all) pools from 26_cv_summary and ingest each."""
+    cv = _read_summary(transfer, pathogen, SUMMARY_26_CV)
+    if cv is None or cv.empty:
+        return []
+    rows = []
+    for _, r in cv.iterrows():
+        cat = r["category"]
+        pool_id = f"{cat}_catchall"
+        row = _ingest_pool(
+            transfer, pathogen, cat, pool_id, step="26",
+            auroc=r.get("auroc"),
+            cutoff=r.get("youden_cutoff", pd.NA),
+            n_assays=r.get("n_datasets", pd.NA),
+            raw_dir=raw_dir,
+        )
+        if row is not None:
+            rows.append(row)
+    return rows
+
+
 def download_pathogen(pathogen: str, use_eosvc: bool) -> None:
     transfer = download_file if use_eosvc else copy_from_repo
     raw_dir = os.path.join(REPO_ROOT, "data", "raw", "chembl", pathogen)
+    os.makedirs(raw_dir, exist_ok=True)
 
-    for filename in FILES:
-        transfer(
-            remote_path=f"output/{pathogen}/{filename}",
-            local_path=os.path.join(raw_dir, filename),
-        )
+    print(f"[{pathogen}]")
+    rows = _grown_pool_rows(transfer, pathogen, raw_dir)
+    rows += _catchall_pool_rows(transfer, pathogen, raw_dir)
 
-    general_level = PFALCIPARUM_GENERAL_LEVEL if pathogen == "pfalciparum" else "middle"
-
-    # General datasets: prefer no_pubchem when available
-    if transfer(
-        remote_path=f"output/{pathogen}/{CHEMBL_CSV_GENERAL_NO_PUBCHEM}",
-        local_path=os.path.join(raw_dir, CHEMBL_CSV_GENERAL_NO_PUBCHEM),
-    ):
-        zip_name = CHEMBL_ZIP_GENERAL_NO_PUBCHEM_HIGH if general_level == "high" else CHEMBL_ZIP_GENERAL_NO_PUBCHEM
-        transfer(
-            remote_path=f"output/{pathogen}/{zip_name}",
-            local_path=os.path.join(raw_dir, zip_name),
-        )
-        general_csv = CHEMBL_CSV_GENERAL_NO_PUBCHEM
-    else:
-        transfer(
-            remote_path=f"output/{pathogen}/{CHEMBL_CSV_GENERAL}",
-            local_path=os.path.join(raw_dir, CHEMBL_CSV_GENERAL),
-        )
-        zip_name = CHEMBL_ZIP_GENERAL_HIGH if general_level == "high" else CHEMBL_ZIP_GENERAL
-        transfer(
-            remote_path=f"output/{pathogen}/{zip_name}",
-            local_path=os.path.join(raw_dir, zip_name),
-        )
-        general_csv = CHEMBL_CSV_GENERAL
-
-    pathogen_output_dir = os.path.join(REPO_ROOT, "output", pathogen)
-    if os.path.isdir(pathogen_output_dir) and not os.listdir(pathogen_output_dir):
-        os.rmdir(pathogen_output_dir)
-
-    merge_pathogen(pathogen, general_csv, general_level=general_level)
-
-
-def build_aggregate_g_datasets(pathogen: str, df_meta: pd.DataFrame, zip_path: str) -> pd.DataFrame:
-    """
-    Build G_ORG_DR and G_ORG_SP from all general datasets at the chosen cutoff level.
-    Deduplicates by InChIKey; active (bin=1) wins over inactive.
-    Saves CSVs to data/raw/chembl/{pathogen}/ and returns stat rows for 01_chembl_datasets.
-    """
-    if not os.path.exists(zip_path):
-        return pd.DataFrame()
-
-    stat_rows = []
-
-    for agg_name, activity_types in [("G_ORG_DR", G_ORG_DR), ("G_ORG_SP", G_ORG_SP)]:
-        matching = df_meta[df_meta["activity_type"].isin(activity_types)]
-        if matching.empty:
-            continue
-
-        frames = []
-        with zipfile.ZipFile(zip_path) as zf:
-            namelist = set(zf.namelist())
-            for _, row in matching.iterrows():
-                inner = f"ORG_{row['activity_type']}_{row['cutoff']}.csv.gz"
-                if inner not in namelist:
-                    continue
-                with zf.open(inner) as f:
-                    df = pd.read_csv(io.BytesIO(f.read()), compression="gzip")
-                if COL_SMILES not in df.columns or COL_BIN not in df.columns:
-                    continue
-                frames.append(df[[COL_SMILES, COL_BIN]])
-
-        if not frames:
-            continue
-
-        merged = pd.concat(frames, ignore_index=True)
-
-        # Compute canonical SMILES and InChIKey; discard unparseable
-        group_keys, canonical = [], []
-        for smi in merged[COL_SMILES]:
-            mol = Chem.MolFromSmiles(str(smi) if pd.notna(smi) else "")
-            if mol is None:
-                group_keys.append(None)
-                canonical.append(None)
-            else:
-                can = Chem.MolToSmiles(mol)
-                ik = MolToInchiKey(mol)
-                group_keys.append(ik if ik else can)
-                canonical.append(can)
-
-        merged["_gk"] = group_keys
-        merged["_can"] = canonical
-        merged = merged.dropna(subset=["_gk"])
-
-        # Activity-conservative dedup: active wins (max of 0/1)
-        deduped = (
-            merged.groupby("_gk", sort=False)
-            .agg({"_can": "first", COL_BIN: "max"})
-            .rename(columns={"_can": COL_SMILES})
-            .reset_index(drop=True)
-        )
-
-        n_actives = int((deduped[COL_BIN] == 1).sum())
-        n_compounds = len(deduped)
-
-        if n_actives < 50:
-            print(f"  [{pathogen}] {agg_name}: {n_actives} actives < 50, skipping.")
-            continue
-
-        raw_dir = os.path.join(REPO_ROOT, "data", "raw", "chembl", pathogen)
-        out_path = os.path.join(raw_dir, f"{agg_name}.csv")
-        deduped[[COL_SMILES, COL_BIN]].to_csv(out_path, index=False)
-        print(f"  [{pathogen}] {agg_name}: {n_compounds} compounds, {n_actives} actives → {out_path}")
-
-        stat_rows.append({
-            "name": agg_name,
-            "label": "G",
-            "assay_type": "general_aggregate",
-            "target_type": "ORGANISM",
-            "n_assays": len(matching),
-            "compounds": n_compounds,
-            "positives": n_actives,
-        })
-
-    return pd.DataFrame(stat_rows) if stat_rows else pd.DataFrame()
-
-
-def merge_pathogen(pathogen: str, general_csv: str, general_level: str = "middle") -> None:
-    raw_dir = os.path.join(REPO_ROOT, "data", "raw", "chembl", pathogen)
-    dfs = []
-
-    metadata_path = os.path.join(raw_dir, "19_final_datasets_metadata.csv")
-    if os.path.exists(metadata_path):
-        df_final = pd.read_csv(metadata_path)
-        df_final = df_final.rename(columns={"original_name": "name", "cpds": "compounds"})
-        if "source" in df_final.columns:
-            df_final = df_final.rename(columns={"source": "assay_type"})
-        path_17 = os.path.join(raw_dir, "17_final_datasets.csv")
-        if os.path.exists(path_17):
-            df_17 = pd.read_csv(path_17, usecols=["name", "n_assays"])
-            n_assays_map = df_17.set_index("name")["n_assays"].to_dict()
-            df_final["n_assays"] = df_final["name"].map(n_assays_map)
-        dfs.append(df_final)
-
-    general_path = os.path.join(raw_dir, general_csv)
-    if os.path.exists(general_path):
-        df_general_all = pd.read_csv(general_path)
-        df_general_all = df_general_all[df_general_all["level"] == general_level].reset_index(drop=True)
-        df_general_all = df_general_all.drop(columns=["level", "n_inactives", "auroc_std"])
-        df_general_all = df_general_all.rename(columns={"n_compounds": "compounds", "n_actives": "positives"})
-
-        zip_lookup = GENERAL_CSV_TO_HIGH_ZIP if general_level == "high" else GENERAL_CSV_TO_ZIP
-        zip_path = os.path.join(raw_dir, zip_lookup[general_csv])
-        agg_df = build_aggregate_g_datasets(pathogen, df_general_all, zip_path)
-        if not agg_df.empty:
-            dfs.append(agg_df)
-
-        # Individual G datasets: apply quality filter
-        df_general = df_general_all[
-            (df_general_all["auroc"] >= 0.7) & (df_general_all["positives"] >= 50)
-        ].reset_index(drop=True)
-        df_general.insert(0, "name", [f"ORG_{row.activity_type}_{row.cutoff}" for row in df_general.itertuples()])
-        df_general["target_type"] = "ORGANISM"
-        df_general["label"] = "G"
-        df_general["assay_type"] = "general"
-        dfs.append(df_general)
-
-    if not dfs:
-        print(f"Skipping merge for {pathogen}: no datasets found.")
+    if not rows:
+        print(f"  No pooled datasets found for {pathogen}.")
         return
 
-    df = pd.concat(dfs, ignore_index=True)
-    df["ratio"] = (df["positives"] / df["compounds"]).round(3)
-    df["auroc"] = df["auroc"].round(3)
-    df.insert(0, "pathogen", pathogen)
-    df["source"] = "chembl"
-
-    first_cols = ["pathogen", "source", "label", "assay_type", "n_assays", "name"]
-    rest_cols = [c for c in df.columns if c not in first_cols]
-    df = df[first_cols + rest_cols]
-
-    out_path = os.path.join(REPO_ROOT, "data", "processed", "chembl", pathogen, "01_chembl_datasets.csv")
+    df = pd.DataFrame(rows)[META_COLUMNS]
+    out_path = os.path.join(
+        REPO_ROOT, "data", "processed", "chembl", pathogen, "01_chembl_datasets.csv"
+    )
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     df.to_csv(out_path, index=False)
-    print(f"Saved merged datasets to {out_path}")
+    n_grown = int((df["pool_step"] == "25").sum())
+    n_catchall = int((df["pool_step"] == "26").sum())
+    print(f"  {len(df)} pools ({n_grown} grown, {n_catchall} catch-all) -> {out_path}")
 
 
-def merge_all_pathogens() -> pd.DataFrame | None:
+def merge_all_pathogens() -> pd.DataFrame:
     processed = os.path.join(REPO_ROOT, "data", "processed", "chembl")
     dfs = []
     for pathogen in PATHOGENS:
@@ -301,24 +238,26 @@ def merge_all_pathogens() -> pd.DataFrame | None:
     df = pd.concat(dfs, ignore_index=True)
     out_path = os.path.join(processed, "01_chembl_datasets_all.csv")
     df.to_csv(out_path, index=False)
-    print(f"Saved combined datasets ({len(df)} rows) to {out_path}")
+    print(f"\nSaved combined datasets ({len(df)} rows) to {out_path}")
     return df
 
 
 def print_summary(df: pd.DataFrame) -> None:
+    step = df["pool_step"].astype(str)
     print("\n--- Summary ---")
-    print(f"Total datasets      : {len(df)}")
-    print(f"Average ratio       : {df['ratio'].mean():.3f} ± {df['ratio'].std():.3f}")
-    print(f"\nDatasets per label:")
-    for label, count in df['label'].value_counts().items():
+    print(f"Total pooled datasets : {len(df)}")
+    print(f"  grown (25)          : {int((step == '25').sum())}")
+    print(f"  catch-all (26)      : {int((step == '26').sum())}")
+    print(f"Pathogens with data   : {df['pathogen'].nunique()} / {len(PATHOGENS)}")
+    print(f"Average active ratio  : {df['ratio'].mean():.3f} ± {df['ratio'].std():.3f}")
+    print("\nDatasets per category (label):")
+    for label, count in df["label"].value_counts().items():
         print(f"  {label}: {count}")
-    print(f"\nPathogens processed : {df['pathogen'].nunique()} / {len(PATHOGENS)}")
-    print(f"\nDatasets per pathogen:")
-    counts = df.groupby('pathogen').size()
-    cpds = df.groupby('pathogen')['compounds'].sum()
+    print("\nDatasets per pathogen:")
+    counts = df.groupby("pathogen").size()
+    cpds = df.groupby("pathogen")["compounds"].sum()
     for pathogen in counts.index:
-        print(f"  {pathogen}: {counts[pathogen]} datasets, {cpds[pathogen]:,} compounds")
-
+        print(f"  {pathogen}: {counts[pathogen]} pools, {cpds[pathogen]:,} compounds")
 
 
 def main(use_eosvc: bool, pathogens: list[str] | None = None) -> None:
@@ -331,7 +270,7 @@ def main(use_eosvc: bool, pathogens: list[str] | None = None) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Download ChEMBL binary datasets for all pathogens."
+        description="Load ChEMBL stage4 pooled datasets for all pathogens."
     )
     parser.add_argument(
         "--eosvc",

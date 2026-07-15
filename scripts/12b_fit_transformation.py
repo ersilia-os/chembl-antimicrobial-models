@@ -34,34 +34,42 @@ root = os.path.dirname(os.path.abspath(__file__))
 
 REPORTS_PATH = os.path.join(root, "..", "output", "10_reports", "10_reports.csv")
 IN_DIR       = os.path.join(root, "..", "output", "12_drugbank")
+RANK_DIR     = os.path.join(IN_DIR, "rank")   # per-model rank (0-1) predictions from 12a
 OUT_DIR      = os.path.join(root, "..", "output", "12_drugbank")
 OUT_PATH     = os.path.join(OUT_DIR, "12b_fit_transformation.csv")
 FIG_PATH     = os.path.join(OUT_DIR, "12b_fit_transformation.png")
 PARAMS_PATH  = os.path.join(OUT_DIR, "12b_tanh_fit.json")
 os.makedirs(OUT_DIR, exist_ok=True)
 
-W_COLS    = ["w1", "w2", "w3", "w4", "w5", "w6", "w7"]
-W_WEIGHTS = np.ones(len(W_COLS) + 1)
+W_COLS    = ["w1", "w2", "w3", "w4", "w5", "w6"]   # quality weights from 10_reports
+W_WEIGHTS = np.ones(len(W_COLS) + 1)               # + w7 (per-compound cutoff ramp)
 
 
 def _tanh_transform(x, k):
     return 0.5 + 0.5 * np.tanh(k * (x - 0.5)) / np.tanh(k / 2)
 
 
-def _compute_w8(prob_ranks, cutoffs):
+def _compute_w7(prob_ranks, cutoffs):
+    """w7 — per-compound cutoff ramp: 0 at/below decision_cutoff_rank, linear to 1 above it."""
     c = np.clip(cutoffs[np.newaxis, :], 0.0, 1.0 - 1e-9)
     return np.where(prob_ranks <= c, 0.0, (prob_ranks - c) / (1.0 - c))
 
 
 def _score(prob_ranks, w_quality, cutoffs):
     """Untransformed weighted consensus (matches scripts/14_consensus_scoring.py)."""
-    w8 = _compute_w8(prob_ranks, cutoffs)
+    w7 = _compute_w7(prob_ranks, cutoffs)
     n_compounds, n_models = prob_ranks.shape
     w_all = np.empty((n_compounds, n_models, len(W_WEIGHTS)))
     w_all[:, :, :len(W_COLS)] = w_quality
-    w_all[:, :,  len(W_COLS)] = w8
+    w_all[:, :,  len(W_COLS)] = w7
     w = np.average(w_all, axis=-1, weights=W_WEIGHTS)
-    return (prob_ranks * w).sum(axis=1) / w.sum(axis=1)
+    denom = w.sum(axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        score = (prob_ranks * w).sum(axis=1) / denom
+    zero = denom == 0.0          # all weights 0 for a compound -> fall back to plain mean
+    if zero.any():
+        score[zero] = prob_ranks[zero].mean(axis=1)
+    return score
 
 
 def _iqr(a):
@@ -175,7 +183,7 @@ def main():
     reports = pd.read_csv(REPORTS_PATH)
     rows = []
     for pathogen in dict.fromkeys(reports["pathogen"]):
-        f12 = os.path.join(IN_DIR, f"{pathogen}.csv")
+        f12 = os.path.join(RANK_DIR, f"{pathogen}.csv")
         if not os.path.isfile(f12):
             continue
         df12 = pd.read_csv(f12)
@@ -189,6 +197,13 @@ def main():
             raise ValueError(
                 f"[{pathogen}] NaN predictions in step-12 output: {bad}. "
                 "Decide how to handle these (drop / impute / exclude pairwise) before scoring."
+            )
+        vmin, vmax = float(df12[model_cols].values.min()), float(df12[model_cols].values.max())
+        if vmin < -1e-6 or vmax > 1.0 + 1e-6:
+            raise ValueError(
+                f"[{pathogen}] predictions are not on the [0,1] rank scale "
+                f"(min={vmin:.3f}, max={vmax:.3f}). 12b requires the 'rank' predict type "
+                f"({RANK_DIR})."
             )
         prob_ranks    = df12[model_cols].values
         w_quality     = np.array([pre.loc[m, W_COLS].values for m in model_cols], dtype=float)
@@ -204,9 +219,22 @@ def main():
         })
 
     points = pd.DataFrame(rows)
+    if points.empty:
+        print("[WARN] no pathogens with >=2 matching models found — nothing to fit. "
+              "Check that 12a wrote rank predictions with matching model_name columns.")
+        return
 
     # Fit the meta-curve k(M) to all valid (M, k*) pairs.
     fit_mask = points["k_star"].notna() & (points["k_star"] > 0)
+    if int(fit_mask.sum()) < 2:
+        points["k_fitted"] = np.nan
+        points.to_csv(OUT_PATH, index=False)
+        print(points.to_string(index=False))
+        print(f"\n[WARN] only {int(fit_mask.sum())} pathogen(s) with k*>0 — cannot fit the k(M) "
+              "meta-curve (need >=2). Existing 12b_tanh_fit.json left untouched. "
+              "Run the full training set before trusting (a, tau).")
+        print(f"Saved table: {OUT_PATH}")
+        return
     a_hat, tau_hat = _fit_k_model(points.loc[fit_mask, "M"], points.loc[fit_mask, "k_star"])
     points["k_fitted"] = np.round(_k_model(points["M"].to_numpy(float), a_hat, tau_hat), 4)
     rmse = float(np.sqrt(np.mean(

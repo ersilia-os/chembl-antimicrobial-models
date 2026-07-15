@@ -63,8 +63,7 @@ RUNTIME_ENV = "cam-models-runtime"
 _DROP_COLS    = ["predict_rank_actives", "predict_rank_inactives"]
 _DESCRIPTORS  = ("chemeleon", "clamp", "cddd")
 _SOURCE_RANK  = {"chembl": 0, "pubchem": 1}
-_LABEL_RANK   = {"A": 0, "B": 1, "M": 2, "G": 3}
-_W_COLS       = ["w1", "w2", "w3", "w4", "w5", "w6", "w7"]
+_W_COLS       = ["w1", "w2", "w3", "w4", "w5", "w6"]  # six stored quality weights (w7 ramp is per-compound)
 
 # Pinned versions for the refreshed install.yml. ersilia-pack-utils version
 # matches what was shipped at initial incorporation (02_init_pathogen.py); the
@@ -94,10 +93,10 @@ CONSENSUS_PY = '''\
 """Quality-weighted consensus across LazyQSAR sub-models.
 
 Mirrors chembl-antimicrobial-models/scripts/14_consensus_scoring.py:
-- W1..W7 are per-sub-model quality weights from reports.csv.
-- W8 is a per-compound weight that ramps 0->1 above each sub-model's
+- W1..W6 are per-sub-model quality weights from reports.csv.
+- W7 is a per-compound weight that ramps 0->1 above each sub-model's
   decision_cutoff_rank.
-- All 8 weights are uniformly averaged into an effective per-compound,
+- All 7 weights are uniformly averaged into an effective per-compound,
   per-sub-model weight; the consensus is the weighted mean of prob_ranks;
   a tanh transform then restores the IQR that averaging compresses
   toward 0.5.
@@ -112,7 +111,7 @@ import os
 import numpy as np
 import pandas as pd
 
-_W_COLS = ["w1", "w2", "w3", "w4", "w5", "w6", "w7"]
+_W_COLS = ["w1", "w2", "w3", "w4", "w5", "w6"]
 _TANH_A, _TANH_TAU = __TANH_A__, __TANH_TAU__
 
 
@@ -153,16 +152,21 @@ def compute_consensus(R, cols_ordered, model_names, checkpoints_dir):
     if (~nan_rows).any():
         pr = prob_ranks[~nan_rows]
         c  = np.clip(cutoffs[np.newaxis, :], 0.0, 1.0 - 1e-9)
-        w8 = np.where(pr <= c, 0.0, (pr - c) / (1.0 - c))
+        w7 = np.where(pr <= c, 0.0, (pr - c) / (1.0 - c))
 
         n_good = pr.shape[0]
         n_w    = len(_W_COLS) + 1
         w_all = np.empty((n_good, M, n_w))
         w_all[:, :, :len(_W_COLS)] = w_quality
-        w_all[:, :,  len(_W_COLS)] = w8
+        w_all[:, :,  len(_W_COLS)] = w7
         w_eff = np.average(w_all, axis=-1, weights=np.ones(n_w))
 
-        raw = (pr * w_eff).sum(axis=1) / w_eff.sum(axis=1)
+        denom = w_eff.sum(axis=1)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            raw = (pr * w_eff).sum(axis=1) / denom
+        zero = denom == 0.0          # all weights 0 for a compound -> fall back to plain mean
+        if zero.any():
+            raw[zero] = pr[zero].mean(axis=1)
         k   = 2.0 * (1.0 + _TANH_A * (1.0 - np.exp(-M / _TANH_TAU)))
         consensus[~nan_rows] = 0.5 + 0.5 * np.tanh(k * (raw - 0.5)) / np.tanh(k / 2)
 
@@ -177,17 +181,18 @@ def compute_consensus(R, cols_ordered, model_names, checkpoints_dir):
 # ---------------------------------------------------------------------------
 
 def filter_and_sort(reports_df, meta_df, pathogen):
-    """Drop sub-models with auroc_mean < MIN_AUROC; sort by (source, label, n_compounds desc)."""
+    """Drop sub-models with auroc_mean < MIN_AUROC. Preserve the 10_reports order, which
+    10a already sorts per pathogen (DR pools, SP pools, catch-alls, then PubChem)."""
     df = reports_df[reports_df["pathogen"] == pathogen].copy()
     if df.empty:
         sys.exit(f"No rows in 10_reports.csv for pathogen '{pathogen}'.")
 
-    meta = meta_df[["pathogen", "name", "source", "label"]]
+    meta = meta_df[["pathogen", "name", "source"]]
     df = df.merge(meta, on=["pathogen", "name"], how="left", validate="one_to_one")
-    missing = df[df["source"].isna() | df["label"].isna()]
+    missing = df[df["source"].isna()]
     if not missing.empty:
         sys.exit(
-            f"Sub-models missing source/label in 07_datasets_metadata.csv: "
+            f"Sub-models missing source in 07_datasets_metadata.csv: "
             f"{missing['model_name'].tolist()}"
         )
 
@@ -195,14 +200,7 @@ def filter_and_sort(reports_df, meta_df, pathogen):
     if df.empty:
         sys.exit(f"All sub-models for {pathogen} fall below AUROC>={MIN_AUROC}.")
 
-    df["_src"] = df["source"].map(_SOURCE_RANK)
-    df["_lbl"] = df["label"].map(_LABEL_RANK)
-    if df["_src"].isna().any() or df["_lbl"].isna().any():
-        bad = df[df["_src"].isna() | df["_lbl"].isna()]
-        sys.exit(f"Unknown source/label: {bad[['model_name', 'source', 'label']].to_dict('records')}")
-
-    df = df.sort_values(["_src", "_lbl", "n_compounds"], ascending=[True, True, False])
-    return df.drop(columns=["_src", "_lbl", "source", "label"])
+    return df.drop(columns=["source"])
 
 
 # ---------------------------------------------------------------------------
@@ -212,18 +210,18 @@ def filter_and_sort(reports_df, meta_df, pathogen):
 def consensus_threshold(cutoffs, w_quality, tanh_a, tanh_tau):
     """Apply consensus.py's formula to per-sub-model decision_cutoff_rank values,
     treating them as the prob_ranks of a compound sitting exactly on each
-    sub-model's boundary. W8 = 0 at the boundary by construction.
+    sub-model's boundary. W7 = 0 at the boundary by construction.
     """
     cutoffs   = np.asarray(cutoffs,   dtype=float)
     w_quality = np.asarray(w_quality, dtype=float)
     M = len(cutoffs)
     prob_ranks = cutoffs.reshape(1, -1)
     c  = np.clip(cutoffs[None, :], 0.0, 1.0 - 1e-9)
-    w8 = np.where(prob_ranks <= c, 0.0, (prob_ranks - c) / (1.0 - c))
+    w7 = np.where(prob_ranks <= c, 0.0, (prob_ranks - c) / (1.0 - c))
     n_w = w_quality.shape[1] + 1
     w_all = np.empty((1, M, n_w))
     w_all[:, :, :w_quality.shape[1]] = w_quality
-    w_all[:, :,  w_quality.shape[1]] = w8
+    w_all[:, :,  w_quality.shape[1]] = w7
     w_eff = np.average(w_all, axis=-1, weights=np.ones(n_w))
     raw = (prob_ranks * w_eff).sum(axis=1) / w_eff.sum(axis=1)
     k = 2.0 * (1.0 + tanh_a * (1.0 - np.exp(-M / tanh_tau)))
@@ -234,70 +232,44 @@ def consensus_threshold(cutoffs, w_quality, tanh_a, tanh_tau):
 # Description builders
 # ---------------------------------------------------------------------------
 
-def _cutoff_str(cutoff, unit):
-    val = int(cutoff) if float(cutoff) % 1 == 0 else float(cutoff)
-    if unit == "%":
-        return f"{val}%"
-    if unit == "umol.L-1":
-        return f"{val} uM"
-    return f"{val} {unit}"
-
-
-def _measurement_phrase(activity_type, unit):
-    if pd.isna(activity_type):
-        return ""
-    if unit == "%":
-        if activity_type == "INHIBITION":   return "inhibition %"
-        if activity_type == "ACTIVITY":     return "single-point % activity"
-        if activity_type == "GI":           return "growth inhibition %"
-        if activity_type == "PERCENTEFFECT": return "percent effect"
-        return activity_type.lower()
-    return f"{activity_type} measurements"
+_CATEGORY = {"DR": "dose-response", "SP": "single-point"}
 
 
 def build_description(meta_row, dataset_name, dcr):
-    assay_type    = meta_row["assay_type"]
-    activity_type = meta_row.get("activity_type", None)
-    unit          = meta_row.get("unit", None)
-    cutoff        = meta_row.get("cutoff", None)
-    n_assays      = int(meta_row["n_assays"]) if not pd.isna(meta_row["n_assays"]) else None
-    n_compounds   = int(meta_row["final_compounds"])
-    decoys        = int(meta_row["decoys"]) if not pd.isna(meta_row.get("decoys", np.nan)) else 0
+    """Human-readable sub-model description for run_columns.csv.
 
-    decoys_str    = " incl. decoys" if decoys > 0 else ""
+    The rebuilt datasets are signal-based pools (ChEMBL stage4) or transfer-pooled organism
+    assays (PubChem step 08). Pools carry no per-assay activity type/unit and `cutoff` is a
+    Youden *score* — so we describe the dataset family, not a concentration threshold.
+    """
+    source      = meta_row.get("source", "")
+    assay_type  = meta_row.get("assay_type", "")
+    label       = meta_row.get("label", "")
+    n_assays    = int(meta_row["n_assays"]) if not pd.isna(meta_row.get("n_assays", np.nan)) else None
+    n_compounds = int(meta_row["final_compounds"])
+    _an = meta_row.get("added_negatives", 0)
+    _ad = meta_row.get("added_decoys", 0)
+    n_added     = (0 if pd.isna(_an) else int(_an)) + (0 if pd.isna(_ad) else int(_ad))
+
+    added_str     = f", incl. {n_added} added negatives" if n_added > 0 else ""
     threshold_str = f"Recommended threshold: {round(dcr, 3)}."
+    category      = _CATEGORY.get(label, "")
+    assays_str    = f" of {n_assays} assay{'s' if n_assays != 1 else ''}" if n_assays else ""
 
-    if assay_type == "individual":
-        assay_id = dataset_name.split("_")[0]
-        phrase   = _measurement_phrase(activity_type, unit)
-        cutoff_s = _cutoff_str(cutoff, unit)
-        body = f"ChEMBL assay {assay_id} ({phrase}; cutoff {cutoff_s}; n={n_compounds})"
-        return f"Probability from sub-model trained on {body}. {threshold_str}"
+    if source == "pubchem":
+        if bool(meta_row.get("is_merged", False)) and not pd.isna(meta_row.get("n_members", np.nan)):
+            body = (f"PubChem whole-cell organism screen merged from "
+                    f"{int(meta_row['n_members'])} assays (n={n_compounds}{added_str})")
+        else:
+            body = f"PubChem whole-cell organism assay AID {dataset_name} (n={n_compounds}{added_str})"
+    elif assay_type == "pool":
+        body = f"ChEMBL {category} signal-based pool{assays_str} (n={n_compounds}{added_str})"
+    elif assay_type == "catchall":
+        body = f"ChEMBL {category} low-data catch-all pool{assays_str} (n={n_compounds}{added_str})"
+    else:
+        body = f"dataset {dataset_name} (n={n_compounds}{added_str})"
 
-    if assay_type == "merged":
-        phrase   = _measurement_phrase(activity_type, unit)
-        cutoff_s = _cutoff_str(cutoff, unit)
-        body = (
-            f"{phrase} merged across {n_assays} ChEMBL assays "
-            f"(cutoff {cutoff_s}; n={n_compounds}{decoys_str})"
-        )
-        return f"Probability from sub-model trained on {body}. {threshold_str}"
-
-    if assay_type == "general":
-        phrase   = _measurement_phrase(activity_type, unit)
-        cutoff_s = _cutoff_str(cutoff, unit)
-        body = (
-            f"{phrase} aggregated across {n_assays} ChEMBL assays "
-            f"(cutoff {cutoff_s}; n={n_compounds}{decoys_str})"
-        )
-        return f"Probability from sub-model trained on {body}. {threshold_str}"
-
-    if assay_type == "general_aggregate":
-        phrase = "dose-response measurements" if "DR" in dataset_name else "single-point activity measurements"
-        body   = f"{phrase} aggregated across {n_assays} ChEMBL assays (n={n_compounds})"
-        return f"Probability from sub-model trained on {body}. {threshold_str}"
-
-    return f"Probability from sub-model trained on dataset {dataset_name} (n={n_compounds}). {threshold_str}"
+    return f"Probability from sub-model trained on {body}. {threshold_str}"
 
 
 # ---------------------------------------------------------------------------

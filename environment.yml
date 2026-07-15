@@ -13,7 +13,7 @@ dependencies:
   - pip:
       - adjustText==1.3.0
       - tabulate==0.9.0
-      - lazyqsar[all]==3.2.0
+      - lazyqsar[all]==3.4.2
       - git+https://github.com/ersilia-os/eosvc.git@v0.1.3
       - git+https://github.com/ersilia-os/ersilia-apptainer.git@a7d8be09df0efc72114ed554f111d25f1f6587cb
       - stylia==1.0.1

@@ -11,7 +11,7 @@ Since the metrics are rank-based (spearman, hit_overlap, auroc), only pearson
 differs between the two; it is the only metric the transform affects.
 
 Inputs:
-  output/12_drugbank/{pathogen}.csv         — prob_ranks per model
+  output/12_drugbank/rank/{pathogen}.csv    — prob_ranks per model
   output/14_consensus/{pathogen}_transformed.csv            (default)
   output/14_consensus/{pathogen}_unweighted_transformed.csv (default)
   output/14_consensus/{pathogen}.csv            (--untransformed)
@@ -46,7 +46,7 @@ from sklearn.metrics import roc_auc_score
 ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 
-DEFAULT_IN_DIR_12 = os.path.join(REPO_ROOT, "output", "12_drugbank")
+DEFAULT_IN_DIR_12 = os.path.join(REPO_ROOT, "output", "12_drugbank", "rank")  # per-model rank (0-1) predictions
 DEFAULT_IN_DIR_14 = os.path.join(REPO_ROOT, "output", "14_consensus")
 DEFAULT_OUT_DIR   = os.path.join(REPO_ROOT, "output", "16_recapitulate_consensus")
 REPORTS_PATH      = os.path.join(REPO_ROOT, "output", "10_reports", "10_reports.csv")

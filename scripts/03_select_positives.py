@@ -5,22 +5,11 @@ Reads processed dataset metadata from:
   - data/processed/chembl/01_chembl_datasets_all.csv
   - data/processed/pubchem/02_pubchem_datasets_organism.csv
 
-For each ChEMBL dataset, opens the corresponding zip archive and extracts
-SMILES with bin == 1.
-
-Zip file mapping:
-  Labels A, B, M  ->  data/raw/chembl/<pathogen>/19_final_datasets.zip
-                       file inside: {name}.csv  (columns: smiles, bin)
-  Label G         ->  data/raw/chembl/<pathogen>/20_general_no_pubchem_datasets_middle.zip
-                       (preferred) or 20_general_datasets_middle.zip
-                       file inside: ORG_{activity_type}_{cutoff}.csv.gz
-                                    (columns: compound_chembl_id, bin, smiles)
-  Label G (aggregate) -> data/raw/chembl/<pathogen>/G_ORG_DR.csv or G_ORG_SP.csv
-                       (columns: smiles, bin)
-
-For each PubChem dataset, opens the corresponding raw assay CSV under
-data/raw/pubchem/<pathogen>/<name>.csv and extracts active SMILES from the
-compound-level activity labels.
+Both metadata tables now share the same access convention (columns `pathogen`,
+`name`, plus counts), so dataset reads are uniform:
+  - ChEMBL  : data/raw/chembl/<pathogen>/<name>.csv.gz    (gzipped pool file)
+  - PubChem : data/raw/pubchem/<pathogen>/<name>.csv       (organism dataset)
+Each file carries `smiles` and `bin` columns; active compounds are those with bin == 1.
 
 Raw SMILES are deduplicated by InChIKey: all SMILES that map to the same
 InChIKey are collapsed into one row. SMILES that RDKit cannot parse are
@@ -42,10 +31,8 @@ Usage:
     python scripts/03_select_positives.py
 """
 
-import io
 import os
 import sys
-import zipfile
 from collections import defaultdict
 
 import pandas as pd
@@ -57,12 +44,7 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.join(ROOT, "..")
 sys.path.append(os.path.join(ROOT, "..", "src"))
 
-from default import (
-    CHEMBL_ZIP_FINAL,
-    CHEMBL_ZIP_GENERAL,
-    CHEMBL_ZIP_GENERAL_HIGH,
-    CHEMBL_ZIP_GENERAL_NO_PUBCHEM,
-    CHEMBL_ZIP_GENERAL_NO_PUBCHEM_HIGH,
+from default import (  # noqa: E402
     COL_BIN,
     COL_CANONICAL_SMILES,
     COL_FOUND_IN,
@@ -78,62 +60,40 @@ OUTPUT_PATH = os.path.join(output_dir, "03_selected_positives.csv")
 SMILES_OUTPUT_PATH = os.path.join(output_dir, "selected_positive_smiles.csv")
 os.makedirs(output_dir, exist_ok=True)
 
-def read_chembl_dataset(row: pd.Series) -> pd.Series | None:
-    pathogen = row["pathogen"]
-    label = row["label"]
-    name = row["name"]
 
-    if label in {"A", "B", "M"}:
-        zip_path = os.path.join(REPO_ROOT, "data", "raw", "chembl", pathogen, CHEMBL_ZIP_FINAL)
-        inner_name = f"{name}.csv"
-        with zipfile.ZipFile(zip_path) as zf:
-            with zf.open(inner_name) as f:
-                df = pd.read_csv(f)
-
-    elif label == "G" and row.get("assay_type") == "general_aggregate":
-        csv_path = os.path.join(REPO_ROOT, "data", "raw", "chembl", pathogen, f"{name}.csv")
-        if not os.path.exists(csv_path):
-            return None
-        df = pd.read_csv(csv_path)
-
-    elif label == "G":
-        base_dir = os.path.join(REPO_ROOT, "data", "raw", "chembl", pathogen)
-        if pathogen == "pfalciparum":
-            no_pubchem = os.path.join(base_dir, CHEMBL_ZIP_GENERAL_NO_PUBCHEM_HIGH)
-            zip_path = no_pubchem if os.path.exists(no_pubchem) else os.path.join(base_dir, CHEMBL_ZIP_GENERAL_HIGH)
-        else:
-            no_pubchem = os.path.join(base_dir, CHEMBL_ZIP_GENERAL_NO_PUBCHEM)
-            zip_path = no_pubchem if os.path.exists(no_pubchem) else os.path.join(base_dir, CHEMBL_ZIP_GENERAL)
-        inner_name = f"{row['name']}.csv.gz"
-        with zipfile.ZipFile(zip_path) as zf:
-            with zf.open(inner_name) as f:
-                df = pd.read_csv(io.BytesIO(f.read()), compression="gzip")
-
-    else:
+def _read_actives(path: str) -> pd.Series | None:
+    """Return the active (bin == 1) SMILES of a dataset file, or None if unavailable."""
+    if not os.path.exists(path):
+        print(f"  [WARN] missing dataset file: {os.path.relpath(path, REPO_ROOT)}")
         return None
-
-    actives = df[df[COL_BIN] == 1][COL_SMILES].dropna()
-    return actives
-
-
-def read_pubchem_dataset(row: pd.Series) -> pd.Series | None:
-    assay_path = os.path.join(REPO_ROOT, "data", "raw", "pubchem", row["pathogen_code"], f"{int(row['aid'])}.csv")
-    if not os.path.exists(assay_path):
+    try:
+        df = pd.read_csv(path)  # pandas infers gzip from the .gz suffix
+    except Exception as exc:  # noqa: BLE001
+        print(f"  [WARN] could not read {os.path.basename(path)}: {exc}")
         return None
-    df = pd.read_csv(assay_path)
     if COL_SMILES not in df.columns or COL_BIN not in df.columns:
+        print(f"  [WARN] {os.path.basename(path)} missing '{COL_SMILES}'/'{COL_BIN}'.")
         return None
     return df.loc[df[COL_BIN] == 1, COL_SMILES].dropna()
 
 
-def collect_actives(meta: pd.DataFrame, reader, source: str, pathogen_col: str = "pathogen", name_col: str = "name") -> dict[str, set[str]]:
-    actives: dict[str, set[str]] = defaultdict(set)
+def read_chembl_dataset(row: pd.Series) -> pd.Series | None:
+    path = os.path.join(REPO_ROOT, "data", "raw", "chembl", row["pathogen"], f"{row['name']}.csv.gz")
+    return _read_actives(path)
 
+
+def read_pubchem_dataset(row: pd.Series) -> pd.Series | None:
+    path = os.path.join(REPO_ROOT, "data", "raw", "pubchem", row["pathogen"], f"{row['name']}.csv")
+    return _read_actives(path)
+
+
+def collect_actives(meta: pd.DataFrame, reader, source: str) -> dict[str, set[str]]:
+    actives: dict[str, set[str]] = defaultdict(set)
     for _, row in tqdm(meta.iterrows(), total=len(meta), desc=source, unit="dataset"):
         smiles_series = reader(row)
         if smiles_series is None or smiles_series.empty:
             continue
-        tag = f"{source}|{row[pathogen_col]}|{row[name_col]}"
+        tag = f"{source}|{row['pathogen']}|{row['name']}"
         for smi in smiles_series.unique():
             actives[smi].add(tag)
     return actives
@@ -201,7 +161,7 @@ def main(split_size: int = SPLIT_SIZE) -> None:
     pubchem_meta = pd.read_csv(PUBCHEM_DATASETS)
 
     chembl_actives = collect_actives(chembl_meta, read_chembl_dataset, source="chembl")
-    pubchem_actives = collect_actives(pubchem_meta, read_pubchem_dataset, source="pubchem", pathogen_col="pathogen_code", name_col="aid")
+    pubchem_actives = collect_actives(pubchem_meta, read_pubchem_dataset, source="pubchem")
     actives = merge_actives(chembl_actives, pubchem_actives)
 
     result = canonicalize_actives(actives)

@@ -10,7 +10,7 @@ row split into two columns:
       (left column) and reversed-cumulative distribution (right column)
 
 Inputs (per pathogen):
-  - output/12_drugbank/{pathogen}.csv
+  - output/12_drugbank/rank/{pathogen}.csv
   - output/14_consensus/{pathogen}_transformed.csv
   - output/15_recapitulate_models/{pathogen}.csv
   - output/16_recapitulate_consensus/{pathogen}_weighted_transformed.csv (+ _exc_weighted_transformed)
@@ -41,7 +41,7 @@ sys.path.append(os.path.join(root, "..", "src"))
 from default import RANDOM_SEED
 
 REPORTS_PATH  = os.path.join(root, "..", "output", "10_reports", "10_reports.csv")
-DRUGBANK_DIR  = os.path.join(root, "..", "output", "12_drugbank")
+DRUGBANK_DIR  = os.path.join(root, "..", "output", "12_drugbank", "rank")  # per-model rank (0-1) predictions
 CONSENSUS_DIR = os.path.join(root, "..", "output", "14_consensus")
 RECAP_M_DIR   = os.path.join(root, "..", "output", "15_recapitulate_models")
 RECAP_C_DIR   = os.path.join(root, "..", "output", "16_recapitulate_consensus")

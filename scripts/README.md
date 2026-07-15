@@ -6,25 +6,31 @@ Each script is numbered to match its position in the pipeline. Outputs are writt
 
 ## 01_download_datasets_chembl.py
 
-Downloads ChEMBL antimicrobial datasets for all 15 pathogens from the sibling `chembl-antimicrobial-tasks` repo (default) or from the remote EOS service (`--eosvc`).
+Loads the **signal-based pooled** ChEMBL datasets (stage4) for all 15 pathogens from the sibling `chembl-antimicrobial-tasks` repo (default) or from the remote EOS service (`--eosvc`). Reads `output/stage4/<pathogen>/` in the tasks repo; the old `17/19/20_*` "final"/"general" files no longer exist upstream.
 
-For each pathogen, the `no_pubchem` variant of the general assay files is preferred when available — these exclude compounds already covered by PubChem assays. Only datasets at the `middle` activity cutoff are retained to avoid overly permissive or stringent definitions of activity.
+Two pool families are ingested, both DR (dose-response) and SP (single-point) categories:
+- **Grown pools** — `25_pools/{DR,SP}/<pool_id>.csv.gz`, enumerated from `25_pool_summary.csv`. These are exactly the pools flagged `modelled=True` in `24_cv_summary.csv`.
+- **Catch-all pools** — `26_pools/{DR,SP}/<category>_catchall.csv.gz`, enumerated from `26_cv_summary.csv` (low-data aggregation, present for a subset of pathogens).
 
-Individual general datasets are named `ORG_{activity_type}_{cutoff}` (e.g. `ORG_MIC_10.0`), matching the filename stem in the source zip. In addition, two aggregate datasets are built per pathogen by merging all middle-cutoff assays: `G_ORG_DR` (dose-response types: IC50, MIC, EC50, …) and `G_ORG_SP` (single-point types: INHIBITION, ACTIVITY, GI, …). Deduplication is activity-conservative: if a compound appears active in any constituent assay, it is kept as active. Aggregates with fewer than 50 actives are discarded.
+Each pool CSV has columns `inchikey, compound_chembl_id, smiles, value, unit, bin`. Compound/positive counts are recomputed from the actual files (not trusted from the summary). Metadata is emitted to `data/processed/chembl/<pathogen>/01_chembl_datasets.csv` (+ combined `01_chembl_datasets_all.csv`) with columns compatible with the contract read by scripts 03/07a: `label` = category (DR/SP), `assay_type` = `pool`/`catchall`, `name` = pool id, `auroc` = grown/CV AUROC, `cutoff` = CV Youden score cutoff, `n_assays` = constituent assay count, plus `compounds/positives/ratio` and a `pool_step` (25/26) provenance flag. `activity_type`/`unit` are left blank because pools mix activity types.
 
-**Cutoff:** individual general datasets must also have AUROC ≥ 0.7 and ≥ 50 actives to be included.
+**Selection (decided 2026-07-13):** keep *all* pools present in 25_pools + 26_pools — no AUROC/size filter here (that is re-applied downstream in 10a). First-pass `23_pools` are **not** used, even for pathogens whose growth step produced no grown pools (hpylori, ngonorrhoeae end up with only catch-all pools). Result: 145 pools total (137 grown + 8 catch-all) across all 15 pathogens.
 
 ---
 
 ## 02a_download_datasets_pubchem.py
 
-Downloads the PubChem bioassay summary from the sibling `pubchem-antimicrobial-tasks` repo (default) or from the remote EOS service (`--eosvc`). Filters to organism-level assays only (excludes single-protein assays and discarded labels), then downloads the per-assay compound CSVs for all retained assays.
+Loads the final **organism (whole-cell) pooled datasets** from the `pubchem-antimicrobial-tasks` **step 08** (`output/08_transfer_pool_organism/`), from the sibling repo (default) or the remote EOS service (`--eosvc`). Upstream, step 07 folds near-duplicate organism assays and step 08 transfer-pools those datasets (the PubChem analogue of ChEMBL stage4 pooling), so this script just ingests the finished pools — no re-derivation from `06_summary.csv`, no own dedup.
+
+Reads `08_pool_summary.csv` (one row per pool) and `08_pool_members.csv` (pool → member assay AIDs), copies each pool file `08_transfer_pool_organism/{code}/{pool_id}.csv` → `data/raw/pubchem/{code}/{pool_id}.csv`, and writes metadata to `data/processed/pubchem/02_pubchem_datasets_organism.csv`. `pool_id` (`name`) is a string (e.g. `1242` or `485275_merged3`). Per pool, `member_aids`/`n_members` are the union of underlying assay AIDs from the members file, and `is_merged` = spans >1 assay. Compound/positive counts are recomputed from the copied files. single_protein assays are not used.
+
+**Selection:** all step-08 organism pools are kept — the ChEMBL-overlap and ≥100-datapoint filtering is applied upstream in the PubChem pipeline. Result (current upstream): 40 pools (27 single-assay + 13 multi-assay) across 6 pathogens.
 
 ---
 
 ## 02b_plot_datasets.py
 
-Stacked horizontal bars of ChEMBL + PubChem dataset counts per pathogen alongside a scatter of active ratios per dataset and a per-pathogen breakdown of dataset types. PubChem rows labelled `discarded` are excluded. Output: `output/02_datasets/02_datasets.png`.
+Four-panel figure from the ChEMBL + PubChem dataset metadata: datasets per pathogen (stacked bars, ChEMBL vs PubChem), active ratio per dataset, compounds per dataset (log), and a dataset-type breakdown per pathogen. Types are ChEMBL pool category (DR/SP) plus PubChem organism datasets split into merged vs single-assay. Output: `output/02_datasets/02_datasets.png`.
 
 ---
 
@@ -86,31 +92,31 @@ Each reference is paired with its own 10 decoys and 10 randoms, so both distribu
 
 ## 07a_prepare_datasets.py
 
-Prepares the final compound datasets for model training. Runs four stages in sequence:
+Prepares the final compound datasets for model training. Runs in three stages:
 
-1. **Metadata normalisation.** Loads ChEMBL and PubChem dataset summaries, aligns column names, and flags any ChEMBL dataset that is superseded by a PubChem assay covering the same ChEMBL ID (`keep=False`). Only `keep=True` datasets proceed to extraction and augmentation.
+1. **Metadata.** Concatenates the ChEMBL (`01`) and PubChem (`02a`) metadata — both already share `pathogen`/`source`/`name`/`compounds`/`positives`/`target_type` — and adds `inactives`. No ChEMBL/PubChem overlap flagging: that de-duplication is now handled upstream in the PubChem pipeline's assay-selection criteria.
 
-2. **Compound extraction.** For each kept dataset, extracts SMILES and binary activity labels (`smiles`, `bin`) from the source files — ChEMBL zip archives or PubChem flat CSVs — and writes them to `output/07_datasets/{pathogen}/{name}.csv`. Each dataset is then deduplicated at the **InChIKey** level: one row per molecule, SMILES stored as RDKit canonical SMILES. ChEMBL is already deduplicated upstream (≈no-op); PubChem is not (CID-only, non-canonical) and carries real duplicates and label conflicts that this step resolves.
+2. **Compound extraction.** For each dataset, reads `[inchikey, smiles, bin]` from the source (`data/raw/chembl/{pathogen}/{name}.csv.gz` or `data/raw/pubchem/{pathogen}/{name}.csv` — both carry a standard `inchikey`), validates `bin ∈ {0,1}`, and deduplicates at the **InChIKey** level (one row per molecule; active wins on a conflict). Writes `output/07_datasets/{pathogen}/{name}.csv`. Re-extraction overwrites, so the step is idempotent.
 
-3. **Decoy augmentation.** Datasets with an active ratio above 0.5 are augmented with decoy compounds generated by `eos3e6s` to bring the ratio down to ~0.1. Decoys are drawn from `output/06_decoys/06_eos3e6s_v1.csv` and assigned to actives by **InChIKey** matching. A decoy is excluded if its **InChIKey** matches a compound already in the dataset (including previously added decoys) or an active in any assay of the same pathogen; selected decoys are stored as canonical SMILES. Augmented datasets gain a `decoy` column (`True` for added rows).
+3. **Balancing with proven negatives.** Datasets with an active ratio above **0.5** are balanced down to exactly **0.5** by adding *real measured negatives* — compounds inactive (`bin=0`) in another dataset of the same pathogen (pool spans ChEMBL + PubChem). A candidate is excluded if its InChIKey is already in the dataset or is a proven active (`bin=1`) anywhere in the pathogen. If the proven-negative pool is exhausted, the shortfall is topped up with decoys from `output/06_decoys/06_eos3e6s_v1.csv` (loaded lazily). Added rows get `bin=0` and `added_negative=True`.
 
-4. **Metadata output.** Saves `output/07_datasets/07_datasets_metadata.csv` with compound/positive counts and active ratios recomputed from the deduplicated datasets, plus decoy counts and achieved final ratios.
+Saves `output/07_datasets/07_datasets_metadata.csv` with recomputed counts plus `added_negatives`, `added_decoys`, `final_ratio`, `final_compounds`.
 
-**Conflict rule:** when one InChIKey appears as both active and inactive within a dataset, the **active label wins** (`bin=1`) — consistent with the ChEMBL positive selection (script 01) and the upstream PubChem CID priority.
+**Conflict rule:** when one InChIKey appears as both active and inactive within a dataset, the **active label wins** (`bin=1`).
 
-**Thresholds:** augmentation triggered at ratio > 0.5; target ratio 0.1; up to 20 decoys per active compound (all from `src/default.py`).
+**Threshold:** balance datasets with ratio > 0.5 down to 0.5 (`HIGH_RATIO_THRESHOLD` in `src/default.py`); decoys are fallback-only. In the current run all 51 imbalanced datasets were balanced with proven negatives alone (0 decoys needed).
 
 ---
 
 ## 07b_quality_checks.py
 
-Per-dataset InChIKey-deduplication audit of the post-07 datasets. For each dataset, reports total rows, unparsable SMILES, unique compounds, duplicate compounds (and how many of those duplicate via more than one distinct SMILES string), label conflicts (same InChIKey carrying both `bin=0` and `bin=1`), and decoy/active collisions across other datasets of the same pathogen. Output: `output/07_datasets/07_dup_report.csv`.
+Per-dataset InChIKey-deduplication audit of the post-07 datasets, using the `inchikey` column carried by each file (no RDKit recompute; `source` read from the metadata). For each dataset, reports total rows, rows without an InChIKey, unique compounds, duplicate compounds (and how many duplicate via >1 distinct SMILES), label conflicts (same InChIKey with both `bin=0` and `bin=1`), added-negative count, `added_neg_shared`/`added_neg_shared_frac` (added negatives also added to another dataset of the same pathogen), and added-negative/active collisions across other datasets of the same pathogen (should be 0). Prints a clean/non-clean summary plus a per-pathogen **added-negative reuse** table (reuse factor and % reused — the same proven negative can land in several datasets since the pool is shared per pathogen). Output: `output/07_datasets/07_dup_report.csv`.
 
 ---
 
 ## 07c_plot_datasets.py
 
-Three-panel figure built from the post-augmentation metadata: datasets per pathogen (stacked — solid fill for datasets without decoys, white fill / colored edge for datasets that received decoys), per-dataset active ratio, and total decoys added per pathogen (log-scaled). Datasets that received decoys are drawn as hollow markers in the active-ratio scatter. Output: `output/07_datasets/07_datasets.png`.
+Four-panel figure from the post-balancing metadata: datasets per pathogen (stacked — solid = as-is, white fill / colored edge = balanced with added negatives), final active ratio per dataset (jittered scatter; balanced datasets are hollow and sit at the 0.5 reference line), total negatives added per pathogen (log-scaled), and **negative reuse across datasets** (% of a pathogen's added negatives that were added to more than one dataset — surfaces shared-pool duplication). Output: `output/07_datasets/07_datasets.png`.
 
 ---
 
@@ -122,17 +128,19 @@ Downloads the LazyQSAR descriptor model weights needed by step 09. Run once from
 
 ## 09_run_models.py / 09_run_models.sh *(HPC only)*
 
-Trains a LazyQSAR model for one dataset per SLURM array task. Each task reads `output/07_datasets/{pathogen}/{name}.csv`, runs 5-fold stratified cross-validation, and saves per-fold metrics (AUROC, AUPRC, BEDROC and baselines, OOF AUCs per descriptor, raw score arrays) to `output/09_reports/{pathogen}/{name}.csv`. Then trains a final model on all data and saves it to `output/09_models/{pathogen}/{model_name}/`.
+Trains a LazyQSAR model (`slow` mode: cddd, chemeleon, clamp, morgan, rdkit) for one dataset per SLURM array task. Each task reads `output/07_datasets/{pathogen}/{name}.csv` (`smiles`, `bin`), runs 5-fold stratified cross-validation, and saves per-fold metrics (AUROC, AUPRC, BEDROC and baselines, OOF AUCs per descriptor, raw score arrays) to `output/09_reports/{pathogen}/{model_name}.csv` + a `_folds.json`. Then trains a final model on all data and saves it to `output/09_models/{pathogen}/{model_name}/`. The **model name is the dataset `name`** (unique per pathogen — ChEMBL pool ids / PubChem dataset ids), so report and model files match the dataset file on disk.
 
-**Local alternative:** `09_fit_models_local.py` — runs all datasets sequentially using a local `ersilia` installation. Produces the same report CSV plus a `_folds.json` per dataset (raw fold arrays for plotting) and publication-ready figures in `output/09_plots/`. Accepts an optional `--pathogens` flag to restrict to a subset.
+Datasets whose minority class is smaller than `N_FOLDS` (too few actives/inactives, or all-active/all-inactive) are **skipped** as untrainable, with a message.
+
+**Local alternative:** `09_fit_models_local.py` — runs all datasets sequentially. Same report CSV + `_folds.json` per dataset. Accepts `--pathogens` to restrict to a subset. Existing outputs are skipped, so it is safe to re-run after interruption.
 
 ---
 
 ## 10a_aggregate_reports.py
 
-Reads all per-dataset CV reports from `output/09_reports/` and collapses them into `output/10_reports/`. Applies a hard filter: datasets with mean CV AUROC < 0.7 are excluded and recorded in `10_discarded_models.csv`. Retained datasets are written to `10_reports.csv` with one row per dataset.
+Reads all per-dataset CV reports from `output/09_reports/` (keyed by dataset `name` — no positional recomputation) and collapses them into `output/10_reports/`. Applies a hard filter: datasets with mean CV AUROC < `MIN_AUROC` are excluded and recorded in `10_discarded_models.csv`. Retained datasets are written to `10_reports.csv`, one row per dataset.
 
-Beyond aggregated metrics (mean/std of AUROC, AUPRC, BEDROC), each dataset gets a composite quality weight from seven components: dataset type (individual > merged > general), decoy contamination fraction, mean CV AUROC, AUPRC enrichment over prevalence, BEDROC enrichment over random, total compound count, and active compound count. The `final_weight` is the mean of these seven scores; `final_normalized_weight` rescales within each pathogen so weights sum to 100 — this is used in downstream consensus scoring.
+Beyond aggregated metrics (mean/std of AUROC, AUPRC, BEDROC), each dataset gets a composite quality weight from six 0–1 components: **w1** real-negative fraction = 1 − (added_negatives + added_decoys)/n_negatives (penalises negatives borrowed from other assays / decoy fallback), **w2** mean CV AUROC, **w3** AUPRC enrichment over prevalence, **w4** BEDROC enrichment over random, **w5** total compound count, **w6** active count. (The old flat dataset-type weight was removed and the rest renumbered.) All components are guarded against NaN/inf (baseline clamped away from 0/1, zero-negative and zero-sum guards). `final_weight` is their mean; `final_normalized_weight` rescales within each pathogen to sum to 100. A per-compound seventh weight (**w7**, the decision-cutoff ramp) is added only in the consensus (steps 12b/14).
 
 **Threshold:** `MIN_AUROC = 0.7` (from `src/default.py`).
 
@@ -140,7 +148,7 @@ Beyond aggregated metrics (mean/std of AUROC, AUPRC, BEDROC), each dataset gets 
 
 ## 10b_training_results.py
 
-Per-pathogen three-panel figure: AUROC bars with cross-fold std error, out-of-fold rank-score distributions (jittered scatter + boxplot) for actives vs inactives with the `decision_cutoff_rank` overlaid, and final-weight bars. Decoy-augmented datasets render with a white bar face in the AUROC and weight panels. Accepts `--pathogen <code>` (single) or iterates all pathogens in `10_reports.csv`. Output: `output/10_reports/plots/10_training_{pathogen}.png`.
+Per-pathogen four-panel figure: AUROC bars with cross-fold std error, out-of-fold rank-score distributions (jittered scatter + boxplot) for actives vs inactives with the `decision_cutoff_rank` overlaid, training-set composition (actives / original inactives / added negatives, log scale), and final-weight bars. Datasets balanced with added negatives render with a white bar face in the AUROC and weight panels. Accepts `--pathogen <code>` (single) or iterates all pathogens in `10_reports.csv`. Output: `output/10_reports/plots/10_training_{pathogen}.png`.
 
 ---
 
@@ -162,7 +170,7 @@ Predicts DrugBank scores for each pathogen using the trained LazyQSAR models, ac
 
 ## 12b_fit_transformation.py
 
-For each pathogen, solves the tanh steepness `k*` such that the transformed consensus IQR matches the average per-model IQR, then fits a saturating-exponential meta-curve `k(M) = 2·(1 + a·(1 − e^{−M/τ}))` over the empirical `(M, k*)` points. The fitted `a` and `τ` are written to `output/12_drugbank/12b_tanh_fit.json` and consumed by script 14. A diagnostic figure and per-pathogen table are also written alongside.
+For each pathogen, reads the per-model **rank** predictions from `output/12_drugbank/rank/{pathogen}.csv` (asserts they are on the [0,1] scale) and solves the tanh steepness `k*` such that the transformed consensus IQR matches the average per-model IQR, then fits a saturating-exponential meta-curve `k(M) = 2·(1 + a·(1 − e^{−M/τ}))` over the empirical `(M, k*)` points. The fitted `a` and `τ` are written to `output/12_drugbank/12b_tanh_fit.json` and consumed by script 14. Needs ≥2 pathogens with `k*>0` to fit; otherwise it warns and leaves the existing fit untouched. A diagnostic figure and per-pathogen table are also written alongside.
 
 ---
 
@@ -174,7 +182,7 @@ Runs a single Ersilia Hub model on the DrugBank SMILES file (`data/processed/11_
 
 ## 14_consensus_scoring.py
 
-Computes a weighted consensus score per DrugBank compound for each pathogen. Reads per-model prob_rank predictions from `output/12_drugbank/` and quality weights (w1–w7) from `output/10_reports/10_reports.csv`. A per-compound, per-model eighth weight (w8) linearly rewards predictions above each model's decision cutoff. The weighted mean prob_rank is passed through a tanh transformation that restores IQR compression caused by averaging; steepness k depends on the number of models via a saturating-exponential fit. Outputs weighted and unweighted variants (with and without the tanh transform) to `output/14_consensus/`. Accepts `--pathogen <code>` for a single pathogen.
+Computes a weighted consensus score per DrugBank compound for each pathogen. Reads per-model prob_rank predictions from `output/12_drugbank/rank/{pathogen}.csv` (asserts [0,1] scale) and quality weights (w1–w6) from `output/10_reports/10_reports.csv`. A per-compound, per-model seventh weight (w7) linearly rewards predictions above each model's decision cutoff. The weighted mean prob_rank is passed through a tanh transformation that restores IQR compression caused by averaging; steepness k depends on the number of models via a saturating-exponential fit. Outputs weighted and unweighted variants (with and without the tanh transform) to `output/14_consensus/`. Accepts `--pathogen <code>` for a single pathogen.
 
 ---
 
@@ -198,7 +206,7 @@ Per-pathogen 12-panel consensus dashboard combining DrugBank rank distributions 
 
 ## 17_quality_checks.py
 
-Generates a data and model quality dashboard per pathogen. For each pathogen it produces four files under `output/17_quality_checks/{pathogen}/`: `all_smiles_no_decoys.csv` and `all_smiles_decoys.csv` (unique InChIKeys with label-conflict, decoy-duplication, and DrugBank-overlap flags), `data_summary.csv` (one row per dataset with compound counts and per-dataset conflict/DrugBank counts), and `model_summary.csv` (one row per model with AUROC, weight, and fold-stability flags, including discarded models). A top-level `summary.csv` with one row per pathogen is also written.
+Generates a data and model quality dashboard per pathogen. For each pathogen it produces four files under `output/17_quality_checks/{pathogen}/`: `all_smiles_no_added.csv` and `all_smiles_with_added.csv` (unique InChIKeys with label-conflict, added-negative/inactive-overlap, and DrugBank-overlap flags), `data_summary.csv` (one row per dataset with compound counts, `n_added_negatives`/`n_added_decoys`, and per-dataset conflict/DrugBank counts), and `model_summary.csv` (one row per model with AUROC, weight, and fold-stability flags, including discarded models). A top-level `summary.csv` with one row per pathogen is also written.
 
 **Thresholds:** `FOLD_UNSTABLE_AUROC_STD = 0.05` and `LOW_WEIGHT_THRESHOLD = 0.3` (both in `src/default.py`).
 
@@ -209,7 +217,7 @@ Generates a data and model quality dashboard per pathogen. For each pathogen it 
 Refreshes an already-incorporated Ersilia Hub model with newly trained checkpoints. Per pathogen, reads `output/10_reports/10_reports.csv`, `output/07_datasets/07_datasets_metadata.csv`, `output/09_models/{pathogen}/`, and `output/12_drugbank/12b_tanh_fit.json`; writes a complete refresh package to `output/18_emh_files/{pathogen}/`:
 
 - `reports.csv` — quality report, filtered to `auroc_mean >= MIN_AUROC` and sorted by `(source, label, n_compounds desc)`.
-- `run_columns.csv` — `consensus_score` row + one row per kept sub-model. Descriptions are built from assay type, activity type, units, cutoff, source-assay count, and compound count.
+- `run_columns.csv` — `consensus_score` row + one row per kept sub-model. Descriptions describe the dataset family (ChEMBL DR/SP signal-based pool or low-data catch-all, or PubChem whole-cell organism screen), its constituent-assay count, compound count, and any added negatives — no per-assay concentration cutoff (pool `cutoff` is a Youden score).
 - `consensus.py` — canonical family template with `(a, τ)` from the 12b fit baked in.
 - `metadata.yml` — patched in place from the clone's existing file: `Output Dimension`, `Deployment` (block-style `- Local` only), and `Interpretation` (regenerated with new N).
 - `install.yml` — pins `ersilia-pack-utils` and `lazyqsar` versions and the per-pathogen descriptor `--only` list.
@@ -219,7 +227,7 @@ Refreshes an already-incorporated Ersilia Hub model with newly trained checkpoin
 
 Requires `--pathogen <p>` and `--repo-dir <path-to-clone>`. After the script, the user (with Claude) reviews `DIFF_SUMMARY.txt`, runs the copy commands, `git diff` reviews, and pushes direct to `main` on `ersilia-os/{eosXXXX}` (no PR).
 
-**Consensus threshold (faithful):** computed by applying `consensus.py`'s W1-W7+W8 formula to the per-sub-model `decision_cutoff_rank` values (W8 = 0 at the boundary by construction), then the tanh transform with `(a, τ)` from `output/12_drugbank/12b_tanh_fit.json`. Same `(a, τ)` baked into the shipped `consensus.py`, so the recommended threshold and the production transform always agree.
+**Consensus threshold (faithful):** computed by applying `consensus.py`'s W1-W6 (quality) + W7 (per-compound ramp) formula to the per-sub-model `decision_cutoff_rank` values (W7 = 0 at the boundary by construction), then the tanh transform with `(a, τ)` from `output/12_drugbank/12b_tanh_fit.json`. Same `(a, τ)` baked into the shipped `consensus.py`, so the recommended threshold and the production transform always agree.
 
 ---
 
