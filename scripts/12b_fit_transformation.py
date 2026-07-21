@@ -16,7 +16,7 @@ produces.
 
 There is no meta-curve / global fit across pathogens: each pathogen (and each
 of its LOO exclusions) keeps its own directly-solved k*, used as-is downstream
-by scripts/14_consensus_scoring.py and scripts/18_update_ersilia_model.py.
+by scripts/14_consensus_scoring.py and scripts/18b_update_ersilia_model.py.
 
 Outputs under output/12_drugbank/:
   12b_fit_transformation.csv   — one row per pathogen: M, avg_model_iqr, consensus_iqr,
