@@ -60,16 +60,15 @@ CONDA_SH    = os.environ.get(
 )
 RUNTIME_ENV = "cam-models-runtime"
 
-_DROP_COLS    = ["predict_rank_actives", "predict_rank_inactives"]
+_DROP_COLS    = ["predict_rank_actives", "predict_rank_inactives", "member_assay_ids"]
 _DESCRIPTORS  = ("chemeleon", "clamp", "cddd")
-_SOURCE_RANK  = {"chembl": 0, "pubchem": 1}
 _W_COLS       = ["w1", "w2", "w3", "w4", "w5", "w6"]  # six stored quality weights (w7 ramp is per-compound)
 
 # Pinned versions for the refreshed install.yml. ersilia-pack-utils version
 # matches what was shipped at initial incorporation (02_init_pathogen.py); the
-# lazyqsar bump from 3.3.0 -> 3.4.0 is the reason this refresh is being done.
+# lazyqsar bump from 3.3.0 -> 3.4.2 is the reason this refresh is being done.
 _ERSILIA_PACK_UTILS_VERSION = "0.1.5"
-_LAZYQSAR_VERSION           = "3.4.0"
+_LAZYQSAR_VERSION           = "3.4.2"
 
 
 def render_install_yml(descriptors_needed):
@@ -180,14 +179,29 @@ def compute_consensus(R, cols_ordered, model_names, checkpoints_dir):
 # Filter + sort
 # ---------------------------------------------------------------------------
 
+def _run_columns_rank(row) -> int:
+    """Public-facing sub-model order for run_columns.csv / consensus.py's output
+    columns: SP before DR, pools before catch-alls (dominant), PubChem merged
+    before single. Deliberately separate from 10a's `_type_rank` (DR before SP,
+    used for internal training order) — the two audiences are allowed to order
+    differently; nothing downstream of 10_reports.csv looks up sub-models by
+    position, only by name, so this reorder is safe to scope to this script alone.
+    """
+    if row["source"] == "pubchem":
+        return 4 if bool(row.get("is_merged", False)) else 5
+    cat = 0 if row["label"] == "SP" else 1                      # SP before DR
+    tier = 0 if row.get("assay_type", "") == "pool" else 2      # pools before catch-alls
+    return tier + cat
+
+
 def filter_and_sort(reports_df, meta_df, pathogen):
-    """Drop sub-models with auroc_mean < MIN_AUROC. Preserve the 10_reports order, which
-    10a already sorts per pathogen (DR pools, SP pools, catch-alls, then PubChem)."""
+    """Drop sub-models with auroc_mean < MIN_AUROC, then order them per
+    _run_columns_rank (compound count descending within each group)."""
     df = reports_df[reports_df["pathogen"] == pathogen].copy()
     if df.empty:
         sys.exit(f"No rows in 10_reports.csv for pathogen '{pathogen}'.")
 
-    meta = meta_df[["pathogen", "name", "source"]]
+    meta = meta_df[["pathogen", "name", "source", "label", "assay_type", "is_merged", "member_assay_ids"]]
     df = df.merge(meta, on=["pathogen", "name"], how="left", validate="one_to_one")
     missing = df[df["source"].isna()]
     if not missing.empty:
@@ -200,7 +214,10 @@ def filter_and_sort(reports_df, meta_df, pathogen):
     if df.empty:
         sys.exit(f"All sub-models for {pathogen} fall below AUROC>={MIN_AUROC}.")
 
-    return df.drop(columns=["source"])
+    df["_rank"] = df.apply(_run_columns_rank, axis=1)
+    df = df.sort_values(["_rank", "n_compounds"], ascending=[True, False]).reset_index(drop=True)
+
+    return df.drop(columns=["_rank", "source", "label", "assay_type", "is_merged"])
 
 
 # ---------------------------------------------------------------------------
@@ -234,16 +251,29 @@ def consensus_threshold(cutoffs, w_quality, k_star):
 _CATEGORY = {"DR": "dose-response", "SP": "single-point"}
 
 
+def _resolve_units(pathogen: str, dataset_name: str) -> list[str]:
+    """Unique units among a ChEMBL pool/catch-all's own molecules, read from its
+    raw pool file (data/raw/chembl/{pathogen}/{dataset_name}.csv.gz) — the only
+    place this survives; 07_datasets_metadata.csv blanks 'unit' since pools mix
+    activity types. Returns [] if the file is missing or carries no unit values."""
+    path = os.path.join(REPO_ROOT, "data", "raw", "chembl", pathogen, f"{dataset_name}.csv.gz")
+    if not os.path.exists(path):
+        return []
+    units = pd.read_csv(path, usecols=["unit"])["unit"].dropna().unique().tolist()
+    return sorted(units)
+
+
 def build_description(meta_row, dataset_name, dcr):
     """Human-readable sub-model description for run_columns.csv.
 
     The rebuilt datasets are signal-based pools (ChEMBL stage4) or transfer-pooled organism
-    assays (PubChem step 08). Pools carry no per-assay activity type/unit and `cutoff` is a
-    Youden *score* — so we describe the dataset family, not a concentration threshold.
+    assays (PubChem step 08). `cutoff` is a Youden *score*, not a concentration threshold,
+    so it isn't quoted here — only the model's own decision_cutoff_rank is.
     """
     source      = meta_row.get("source", "")
     assay_type  = meta_row.get("assay_type", "")
     label       = meta_row.get("label", "")
+    pathogen    = meta_row.get("pathogen", "")
     n_assays    = int(meta_row["n_assays"]) if not pd.isna(meta_row.get("n_assays", np.nan)) else None
     n_compounds = int(meta_row["final_compounds"])
     _an = meta_row.get("added_negatives", 0)
@@ -253,7 +283,26 @@ def build_description(meta_row, dataset_name, dcr):
     added_str     = f", incl. {n_added} added negatives" if n_added > 0 else ""
     threshold_str = f"Recommended threshold: {round(dcr, 3)}."
     category      = _CATEGORY.get(label, "")
-    assays_str    = f" of {n_assays} assay{'s' if n_assays != 1 else ''}" if n_assays else ""
+
+    # ChEMBL pools: name the specific assay when the pool truly reduces to one
+    # (member_assay_ids, from 25_pool_members.csv via 01_download_datasets_chembl.py);
+    # otherwise state the count. Catch-alls always use the count (no per-assay file,
+    # and by construction they merge every leftover in a deferred category).
+    member_ids = meta_row.get("member_assay_ids")
+    member_ids = [] if pd.isna(member_ids) else str(member_ids).split("|")
+    if assay_type == "pool" and n_assays == 1 and len(member_ids) == 1:
+        assays_str = f" (assay {member_ids[0]})"
+    else:
+        assays_str = f" of {n_assays} assay{'s' if n_assays != 1 else ''}" if n_assays else ""
+
+    # ChEMBL only: state the unit(s) actually present in this pool's molecules.
+    unit_str = ""
+    if source == "chembl":
+        units = _resolve_units(pathogen, dataset_name)
+        if len(units) == 1:
+            unit_str = f", unit: {units[0]}"
+        elif len(units) > 1:
+            unit_str = f", including units such as {', '.join(units)}"
 
     if source == "pubchem":
         if bool(meta_row.get("is_merged", False)) and not pd.isna(meta_row.get("n_members", np.nan)):
@@ -262,9 +311,9 @@ def build_description(meta_row, dataset_name, dcr):
         else:
             body = f"PubChem whole-cell organism assay AID {dataset_name} (n={n_compounds}{added_str})"
     elif assay_type == "pool":
-        body = f"ChEMBL {category} signal-based pool{assays_str} (n={n_compounds}{added_str})"
+        body = f"ChEMBL {category} signal-based pool{assays_str} (n={n_compounds}{added_str}{unit_str})"
     elif assay_type == "catchall":
-        body = f"ChEMBL {category} low-data catch-all pool{assays_str} (n={n_compounds}{added_str})"
+        body = f"ChEMBL {category} low-data catch-all pool{assays_str} (n={n_compounds}{added_str}{unit_str})"
     else:
         body = f"dataset {dataset_name} (n={n_compounds}{added_str})"
 

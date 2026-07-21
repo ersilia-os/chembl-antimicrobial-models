@@ -57,7 +57,7 @@ CATEGORIES = ["DR", "SP"]  # dose-response, single-point
 # Per-pathogen summary tables consumed to enumerate pools and pull metadata
 SUMMARY_25_POOLS = "25_pool_summary.csv"   # grown pools: pool_id, grown_auroc, ...
 SUMMARY_24_CV = "24_cv_summary.csv"        # first-pass CV: pool_id, youden_cutoff, modelled
-SUMMARY_23_POOLS = "23_pool_summary.csv"   # first-pass membership: pool_id, n_datasets
+SUMMARY_25_MEMBERS = "25_pool_members.csv" # post-growth membership: category, pool_id, dataset_id
 SUMMARY_26_CV = "26_cv_summary.csv"        # catch-all pools: category, n_datasets, auroc, youden
 
 TARGET_TYPE = "ORGANISM"
@@ -66,7 +66,7 @@ TARGET_TYPE = "ORGANISM"
 META_COLUMNS = [
     "pathogen", "source", "label", "assay_type", "n_assays", "name",
     "activity_type", "unit", "target_type", "cutoff", "auroc",
-    "compounds", "positives", "ratio", "pool_step",
+    "compounds", "positives", "ratio", "pool_step", "member_assay_ids",
 ]
 
 
@@ -120,7 +120,7 @@ def _pool_stats(gz_path: str) -> tuple[int, int] | None:
 
 def _ingest_pool(
     transfer, pathogen: str, category: str, pool_id: str, step: str,
-    auroc, cutoff, n_assays, raw_dir: str,
+    auroc, cutoff, n_assays, raw_dir: str, member_assay_ids=pd.NA,
 ) -> dict | None:
     """Transfer one pool gz and build its metadata row. None if unavailable."""
     remote = f"{STAGE4}/{pathogen}/{step}_pools/{category}/{pool_id}.csv.gz"
@@ -148,21 +148,46 @@ def _ingest_pool(
         "positives": n_positives,
         "ratio": round(n_positives / n_compounds, 3) if n_compounds else pd.NA,
         "pool_step": step,
+        "member_assay_ids": member_assay_ids,  # pipe-joined ChEMBL assay IDs; NA for catch-alls
     }
 
 
+def _parse_assay_id(dataset_id: str) -> str:
+    """Recover the ChEMBL assay accession from a 25_pool_members.csv dataset_id,
+    formatted upstream as '{assay_id}_{activity_type}_{unit_slug}' (unit_slug is
+    one of uM/pct/mm, never containing an underscore)."""
+    assay_id = dataset_id.rsplit("_", 2)[0]
+    if not assay_id.startswith("CHEMBL"):
+        raise ValueError(
+            f"Unexpected dataset_id format in 25_pool_members.csv: {dataset_id!r} "
+            f"(parsed assay_id {assay_id!r} does not start with 'CHEMBL')"
+        )
+    return assay_id
+
+
 def _grown_pool_rows(transfer, pathogen: str, raw_dir: str) -> list[dict]:
-    """Enumerate 25 (grown) pools from 25_pool_summary and ingest each."""
+    """Enumerate 25 (grown) pools from 25_pool_summary and ingest each.
+
+    n_assays / member_assay_ids come from 25_pool_members.csv (post-growth
+    membership) rather than 23_pool_summary.csv's n_datasets (pre-growth): step 25
+    ("merge leftovers into modelled pools") can substantially grow a pool after
+    that count was taken, so the pre-growth figure can understate the true
+    constituent-assay count by orders of magnitude for pools that got grown.
+    """
     summary = _read_summary(transfer, pathogen, SUMMARY_25_POOLS)
     if summary is None or summary.empty:
         return []
-    cv = _read_summary(transfer, pathogen, SUMMARY_24_CV)          # youden_cutoff
-    members = _read_summary(transfer, pathogen, SUMMARY_23_POOLS)  # n_datasets
-    cutoff_map, n_assays_map = {}, {}
+    cv = _read_summary(transfer, pathogen, SUMMARY_24_CV)              # youden_cutoff
+    members = _read_summary(transfer, pathogen, SUMMARY_25_MEMBERS)    # dataset_id per pool
+    cutoff_map, n_assays_map, assay_ids_map = {}, {}, {}
     if cv is not None:
         cutoff_map = cv.set_index(["category", "pool_id"])["youden_cutoff"].to_dict()
     if members is not None:
-        n_assays_map = members.set_index(["category", "pool_id"])["n_datasets"].to_dict()
+        n_assays_map = members.groupby(["category", "pool_id"]).size().to_dict()
+        assay_ids_map = {
+            key: "|".join(_parse_assay_id(d) for d in group["dataset_id"])
+            for key, group in members.groupby(["category", "pool_id"])
+        }
 
     rows = []
     for _, r in summary.iterrows():
@@ -173,6 +198,7 @@ def _grown_pool_rows(transfer, pathogen: str, raw_dir: str) -> list[dict]:
             auroc=r.get("grown_auroc"),
             cutoff=cutoff_map.get(key, pd.NA),
             n_assays=n_assays_map.get(key, pd.NA),
+            member_assay_ids=assay_ids_map.get(key, pd.NA),
             raw_dir=raw_dir,
         )
         if row is not None:
