@@ -59,6 +59,7 @@ SUMMARY_25_POOLS = "25_pool_summary.csv"   # grown pools: pool_id, grown_auroc, 
 SUMMARY_24_CV = "24_cv_summary.csv"        # first-pass CV: pool_id, youden_cutoff, modelled
 SUMMARY_25_MEMBERS = "25_pool_members.csv" # post-growth membership: category, pool_id, dataset_id
 SUMMARY_26_CV = "26_cv_summary.csv"        # catch-all pools: category, n_datasets, auroc, youden
+SUMMARY_22_BINARISATION = "22_binarisation_summary.csv"  # assay_id, activity_type, unit, category, ...
 
 TARGET_TYPE = "ORGANISM"
 
@@ -66,7 +67,7 @@ TARGET_TYPE = "ORGANISM"
 META_COLUMNS = [
     "pathogen", "source", "label", "assay_type", "n_assays", "name",
     "activity_type", "unit", "target_type", "cutoff", "auroc",
-    "compounds", "positives", "ratio", "pool_step", "member_assay_ids",
+    "compounds", "positives", "ratio", "pool_step", "member_assay_ids", "activity_types",
 ]
 
 
@@ -120,7 +121,7 @@ def _pool_stats(gz_path: str) -> tuple[int, int] | None:
 
 def _ingest_pool(
     transfer, pathogen: str, category: str, pool_id: str, step: str,
-    auroc, cutoff, n_assays, raw_dir: str, member_assay_ids=pd.NA,
+    auroc, cutoff, n_assays, raw_dir: str, member_assay_ids=pd.NA, activity_types=pd.NA,
 ) -> dict | None:
     """Transfer one pool gz and build its metadata row. None if unavailable."""
     remote = f"{STAGE4}/{pathogen}/{step}_pools/{category}/{pool_id}.csv.gz"
@@ -139,7 +140,7 @@ def _ingest_pool(
         "assay_type": assay_type,
         "n_assays": n_assays,
         "name": pool_id,
-        "activity_type": pd.NA,   # pools mix activity types
+        "activity_type": pd.NA,   # legacy single-value field; pools mix activity types, see activity_types
         "unit": pd.NA,
         "target_type": TARGET_TYPE,
         "cutoff": cutoff,          # youden score cutoff from CV (not an activity cutoff)
@@ -149,7 +150,18 @@ def _ingest_pool(
         "ratio": round(n_positives / n_compounds, 3) if n_compounds else pd.NA,
         "pool_step": step,
         "member_assay_ids": member_assay_ids,  # pipe-joined ChEMBL assay IDs; NA for catch-alls
+        "activity_types": activity_types,      # pipe-joined distinct activity types (e.g. MIC|IC50)
     }
+
+
+def _ordered_by_frequency(items: list[str]) -> list[str]:
+    """Unique values from `items` (which may repeat), most-frequent first; ties broken
+    alphabetically for determinism. Lets consumers treat the first entry as the
+    single most-common value (e.g. for a default-to-most-occurring fallback)."""
+    counts: dict[str, int] = {}
+    for item in items:
+        counts[item] = counts.get(item, 0) + 1
+    return sorted(counts, key=lambda k: (-counts[k], k))
 
 
 def _parse_assay_id(dataset_id: str) -> str:
@@ -173,21 +185,33 @@ def _grown_pool_rows(transfer, pathogen: str, raw_dir: str) -> list[dict]:
     ("merge leftovers into modelled pools") can substantially grow a pool after
     that count was taken, so the pre-growth figure can understate the true
     constituent-assay count by orders of magnitude for pools that got grown.
+
+    activity_types is the distinct set of activity_type values (e.g. MIC, IC50)
+    among a pool's member assays, looked up from 22_binarisation_summary.csv by
+    assay_id — pools mix activity types, so this can be more than one value.
+    Ordered most-frequent-first (by assay count) so the first entry can be used
+    as "the most occurring type" downstream.
     """
     summary = _read_summary(transfer, pathogen, SUMMARY_25_POOLS)
     if summary is None or summary.empty:
         return []
     cv = _read_summary(transfer, pathogen, SUMMARY_24_CV)              # youden_cutoff
     members = _read_summary(transfer, pathogen, SUMMARY_25_MEMBERS)    # dataset_id per pool
-    cutoff_map, n_assays_map, assay_ids_map = {}, {}, {}
+    binarisation = _read_summary(transfer, pathogen, SUMMARY_22_BINARISATION)  # assay_id -> activity_type
+    cutoff_map, n_assays_map, assay_ids_map, activity_types_map = {}, {}, {}, {}
     if cv is not None:
         cutoff_map = cv.set_index(["category", "pool_id"])["youden_cutoff"].to_dict()
+    activity_type_of = (
+        binarisation.set_index("assay_id")["activity_type"].to_dict()
+        if binarisation is not None else {}
+    )
     if members is not None:
         n_assays_map = members.groupby(["category", "pool_id"]).size().to_dict()
-        assay_ids_map = {
-            key: "|".join(_parse_assay_id(d) for d in group["dataset_id"])
-            for key, group in members.groupby(["category", "pool_id"])
-        }
+        for key, group in members.groupby(["category", "pool_id"]):
+            assay_ids = [_parse_assay_id(d) for d in group["dataset_id"]]
+            assay_ids_map[key] = "|".join(assay_ids)
+            types = _ordered_by_frequency([activity_type_of[a] for a in assay_ids if a in activity_type_of])
+            activity_types_map[key] = "|".join(types) if types else pd.NA
 
     rows = []
     for _, r in summary.iterrows():
@@ -199,6 +223,7 @@ def _grown_pool_rows(transfer, pathogen: str, raw_dir: str) -> list[dict]:
             cutoff=cutoff_map.get(key, pd.NA),
             n_assays=n_assays_map.get(key, pd.NA),
             member_assay_ids=assay_ids_map.get(key, pd.NA),
+            activity_types=activity_types_map.get(key, pd.NA),
             raw_dir=raw_dir,
         )
         if row is not None:
@@ -207,19 +232,35 @@ def _grown_pool_rows(transfer, pathogen: str, raw_dir: str) -> list[dict]:
 
 
 def _catchall_pool_rows(transfer, pathogen: str, raw_dir: str) -> list[dict]:
-    """Enumerate 26 (catch-all) pools from 26_cv_summary and ingest each."""
+    """Enumerate 26 (catch-all) pools from 26_cv_summary and ingest each.
+
+    A catch-all merges EVERY 22_binarised dataset in its (pathogen, category) —
+    it only exists for categories with zero modelled pools — so its activity_types
+    is simply the distinct set of activity_type values in 22_binarisation_summary.csv
+    for that category, no member-list lookup needed (unlike grown pools). Ordered
+    most-frequent-first (by assay count), same as grown pools.
+    """
     cv = _read_summary(transfer, pathogen, SUMMARY_26_CV)
     if cv is None or cv.empty:
         return []
+    binarisation = _read_summary(transfer, pathogen, SUMMARY_22_BINARISATION)
+
     rows = []
     for _, r in cv.iterrows():
         cat = r["category"]
         pool_id = f"{cat}_catchall"
+        activity_types = pd.NA
+        if binarisation is not None:
+            types = _ordered_by_frequency(
+                binarisation.loc[binarisation["category"] == cat, "activity_type"].tolist()
+            )
+            activity_types = "|".join(types) if types else pd.NA
         row = _ingest_pool(
             transfer, pathogen, cat, pool_id, step="26",
             auroc=r.get("auroc"),
             cutoff=r.get("youden_cutoff", pd.NA),
             n_assays=r.get("n_datasets", pd.NA),
+            activity_types=activity_types,
             raw_dir=raw_dir,
         )
         if row is not None:
