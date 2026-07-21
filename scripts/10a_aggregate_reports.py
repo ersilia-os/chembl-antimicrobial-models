@@ -10,6 +10,13 @@ output/10_reports/:
 Model files are keyed by the dataset `name` (unique per pathogen), so reports/models are
 found directly with no positional recomputation.
 
+Each row of 10_discarded_models.csv also carries a compound-overlap breakdown against that
+pathogen's ACCEPTED (retained) datasets: compounds, actives (bin=1 count), lost (present
+nowhere else), %_lost (lost / size of the accepted chemical space, i.e. how much this dataset
+would grow it), ambiguous (accepted datasets already disagree amongst themselves), concordant
+(accepted label agrees with the discarded dataset's own label), conflict (accepted label
+disagrees). Invariant: lost + ambiguous + concordant + conflict == compounds.
+
 Quality weight = mean of six 0–1 components (all guarded against NaN/inf):
   w1 real negatives    — 1 − (added_negatives + added_decoys) / n_negatives
                           (penalises negatives borrowed from other assays / decoy fallback)
@@ -29,6 +36,7 @@ Usage:
 import json
 import os
 import sys
+from collections import defaultdict
 
 import numpy as np
 import pandas as pd
@@ -37,9 +45,10 @@ ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 sys.path.append(os.path.join(ROOT, "..", "src"))
 
-from default import DESCRIPTORS, MIN_AUROC, N_FOLDS  # noqa: E402
+from default import COL_BIN, COL_INCHIKEY, DESCRIPTORS, MIN_AUROC, N_FOLDS  # noqa: E402
 
 METADATA_PATH  = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
+DATASETS_DIR   = os.path.join(REPO_ROOT, "output", "07_datasets")
 REPORTS_DIR    = os.path.join(REPO_ROOT, "output", "09_reports")
 MODELS_DIR     = os.path.join(REPO_ROOT, "output", "09_models")
 OUT_DIR        = os.path.join(REPO_ROOT, "output", "10_reports")
@@ -55,6 +64,51 @@ def _dir_size_mb(path: str) -> float:
         for f in files
     )
     return round(total / 1e6, 3)
+
+
+def _load_ik_bins(pathogen: str, name: str) -> pd.DataFrame:
+    path = os.path.join(DATASETS_DIR, pathogen, f"{name}.csv")
+    return pd.read_csv(path, usecols=[COL_INCHIKEY, COL_BIN])
+
+
+def _accepted_space(pathogen: str, accepted_names: list) -> dict:
+    """inchikey -> set of bins seen across all ACCEPTED (retained) datasets of a pathogen."""
+    space = defaultdict(set)
+    for name in accepted_names:
+        df = _load_ik_bins(pathogen, name)
+        for ik, b in zip(df[COL_INCHIKEY], df[COL_BIN]):
+            space[ik].add(int(b))
+    return space
+
+
+def _overlap_stats(pathogen: str, name: str, space: dict) -> dict:
+    """Compound-overlap accounting for one discarded dataset against its pathogen's accepted space.
+
+    lost + ambiguous + concordant + conflict == compounds. `ambiguous` covers compounds where the
+    accepted datasets already disagree amongst themselves (both a 0 and a 1), independent of what
+    the discarded dataset itself says. `%_lost` is lost as a fraction of the accepted space's own
+    size (how much the discarded dataset would grow the pathogen's known chemical space), not of
+    the discarded dataset's own compound count."""
+    df = _load_ik_bins(pathogen, name)
+    compounds = len(df)
+    actives = int(df[COL_BIN].sum())
+    lost = ambiguous = concordant = conflict = 0
+    for ik, b in zip(df[COL_INCHIKEY], df[COL_BIN]):
+        other = space.get(ik)
+        if other is None:
+            lost += 1
+        elif len(other) > 1:
+            ambiguous += 1
+        elif other == {int(b)}:
+            concordant += 1
+        else:
+            conflict += 1
+    n_accepted_compounds = len(space)
+    pct_lost = round(100 * lost / n_accepted_compounds, 4) if n_accepted_compounds else np.nan
+    return {
+        "compounds": compounds, "actives": actives, "lost": lost, "%_lost": pct_lost,
+        "ambiguous": ambiguous, "concordant": concordant, "conflict": conflict,
+    }
 
 
 def _piecewise_linear(x: float, knots: list[tuple[float, float]]) -> float:
@@ -234,6 +288,20 @@ def main() -> None:
         print(f"{prefix} {pathogen}/{name} processed!")
 
     disc_df = pd.DataFrame(discarded, columns=["pathogen", "name", "mean_auroc", "reason"])
+
+    if len(disc_df):
+        accepted_by_pathogen = defaultdict(list)
+        for rec in records:
+            accepted_by_pathogen[rec["pathogen"]].append(rec["name"])
+
+        space_cache = {}
+        overlap_rows = []
+        for pathogen, name in zip(disc_df["pathogen"], disc_df["name"]):
+            if pathogen not in space_cache:
+                space_cache[pathogen] = _accepted_space(pathogen, accepted_by_pathogen.get(pathogen, []))
+            overlap_rows.append(_overlap_stats(pathogen, name, space_cache[pathogen]))
+        disc_df = pd.concat([disc_df.reset_index(drop=True), pd.DataFrame(overlap_rows)], axis=1)
+
     disc_df.to_csv(DISCARDED_PATH, index=False)
     print(f"{len(disc_df)} discarded models → {DISCARDED_PATH}")
     if len(disc_df):

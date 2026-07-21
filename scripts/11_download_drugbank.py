@@ -12,6 +12,8 @@ Filters applied before saving (each dropped with a warning):
   - Inorganic compounds (no carbon atom)
   - Heavy molecules (MW > 1000 Da)
 
+Also pre-creates output/12_logs/, needed before submitting step 12a's SLURM array job.
+
 Usage:
     python scripts/11_download_drugbank.py
     python scripts/11_download_drugbank.py --keep_all_columns
@@ -40,6 +42,9 @@ URL = (
 )
 DEFAULT_OUT = os.path.join(REPO_ROOT, "data", "processed", "11_drugbank_smiles.csv")
 os.makedirs(os.path.dirname(DEFAULT_OUT), exist_ok=True)
+
+# Pre-create step 12a's SLURM log directory (needed before sbatch scripts/12a_run_array.sh).
+os.makedirs(os.path.join(REPO_ROOT, "output", "12_logs"), exist_ok=True)
 
 
 def _filter_compounds(df: pd.DataFrame, smiles_col: str) -> pd.DataFrame:

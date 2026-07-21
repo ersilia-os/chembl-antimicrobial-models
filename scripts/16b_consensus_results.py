@@ -243,6 +243,10 @@ def main():
 
     for code in codes:
         name = code_to_name.get(code, code)
+        transformed_path = os.path.join(CONSENSUS_DIR, f"{code}_transformed.csv")
+        if not os.path.isfile(transformed_path):
+            print(f"  [SKIP] {code}: no consensus output (fewer than 2 retained models)")
+            continue
         print(f"Plotting {name} ({code})")
         out = plot_pathogen(code, name, reports, pal, rng)
         print(f"  saved: {out}")
