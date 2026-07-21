@@ -1,5 +1,8 @@
 """
-Step 18 — Refresh an already-incorporated Ersilia Hub model with newly trained checkpoints.
+Step 18b — Refresh an already-incorporated Ersilia Hub model with newly trained checkpoints.
+
+Prereq: `python scripts/18a_clone_hub_repos.py` has cloned the target eos-id's repo
+        (or it already exists at --repo-dir).
 
 The published model's repo is `ersilia-os/{eosXXXX}`. The user clones it
 directly, runs this script to produce a refresh package under
@@ -25,7 +28,7 @@ Outputs (all under output/18_emh_files/{pathogen}/):
   COPY_INSTRUCTIONS.txt
 
 Usage:
-    python scripts/18_update_ersilia_model.py \\
+    python scripts/18b_update_ersilia_model.py \\
         --pathogen abaumannii \\
         --repo-dir /path/to/clone/eos21dr
 """
@@ -54,10 +57,7 @@ K_STAR_PATH   = os.path.join(REPO_ROOT, "output", "12_drugbank", "12b_k_star.jso
 OUTPUT_DIR    = os.path.join(REPO_ROOT, "output", "18_emh_files")
 TMP_DIR       = os.path.join(REPO_ROOT, "tmp")
 
-CONDA_SH    = os.environ.get(
-    "CONDA_SH",
-    os.path.expanduser("~/programs/miniconda3/etc/profile.d/conda.sh"),
-)
+CONDA_SH    = os.environ.get("CONDA_SH")
 RUNTIME_ENV = "cam-models-runtime"
 
 _DROP_COLS    = ["predict_rank_actives", "predict_rank_inactives", "member_assay_ids"]
@@ -77,7 +77,7 @@ def render_install_yml(descriptors_needed):
         f'python: "3.12"\n'
         f"commands:\n"
         f'    - ["pip", "ersilia-pack-utils", "{_ERSILIA_PACK_UTILS_VERSION}"]\n'
-        f'    - ["pip", "lazyqsar", "{_LAZYQSAR_VERSION}"]\n'
+        f'    - ["pip", "lazyqsar[all]", "{_LAZYQSAR_VERSION}"]\n'
         f'    - "lazyqsar setup --descriptors --only {only}"\n'
     )
 
@@ -99,7 +99,7 @@ Mirrors chembl-antimicrobial-models/scripts/14_consensus_scoring.py:
   per-sub-model weight; the consensus is the weighted mean of prob_ranks;
   a tanh transform (fixed steepness k_star, solved for this pathogen by
   scripts/12b_fit_transformation.py) then restores the IQR that averaging
-  compresses toward 0.5.
+  shrinks (variance reduction).
 
 NaN policy: if any sub-model returns NaN for a given compound, that
 compound's consensus_score is NaN (no weighting, no averaging). The
@@ -181,7 +181,8 @@ def compute_consensus(R, cols_ordered, model_names, checkpoints_dir):
 
 def _run_columns_rank(row) -> int:
     """Public-facing sub-model order for run_columns.csv / consensus.py's output
-    columns: SP before DR, pools before catch-alls (dominant), PubChem merged
+    columns: SP before DR (dominant — every SP entry, pool or catch-all, ranks
+    ahead of every DR entry), pools before catch-alls within each, PubChem merged
     before single. Deliberately separate from 10a's `_type_rank` (DR before SP,
     used for internal training order) — the two audiences are allowed to order
     differently; nothing downstream of 10_reports.csv looks up sub-models by
@@ -189,9 +190,9 @@ def _run_columns_rank(row) -> int:
     """
     if row["source"] == "pubchem":
         return 4 if bool(row.get("is_merged", False)) else 5
-    cat = 0 if row["label"] == "SP" else 1                      # SP before DR
-    tier = 0 if row.get("assay_type", "") == "pool" else 2      # pools before catch-alls
-    return tier + cat
+    cat = 0 if row["label"] == "SP" else 1                      # SP before DR — dominant
+    tier = 0 if row.get("assay_type", "") == "pool" else 1      # pools before catch-alls — secondary
+    return cat * 2 + tier
 
 
 def filter_and_sort(reports_df, meta_df, pathogen):
@@ -251,16 +252,11 @@ def consensus_threshold(cutoffs, w_quality, k_star):
 _CATEGORY = {"DR": "dose-response", "SP": "single-point"}
 
 
-def _resolve_units(pathogen: str, dataset_name: str) -> list[str]:
-    """Unique units among a ChEMBL pool/catch-all's own molecules, read from its
-    raw pool file (data/raw/chembl/{pathogen}/{dataset_name}.csv.gz) — the only
-    place this survives; 07_datasets_metadata.csv blanks 'unit' since pools mix
-    activity types. Returns [] if the file is missing or carries no unit values."""
-    path = os.path.join(REPO_ROOT, "data", "raw", "chembl", pathogen, f"{dataset_name}.csv.gz")
-    if not os.path.exists(path):
-        return []
-    units = pd.read_csv(path, usecols=["unit"])["unit"].dropna().unique().tolist()
-    return sorted(units)
+def _display_activity_type(activity_type: str) -> str:
+    """Prose display form for a raw ChEMBL activity_type. Genuine acronyms (MIC, IC50,
+    EC50, ...) are left as-is; "INHIBITION" reads as an ordinary word in a sentence, so
+    it's shown title-cased instead of ChEMBL's all-caps constant."""
+    return "Inhibition" if activity_type == "INHIBITION" else activity_type
 
 
 def build_description(meta_row, dataset_name, dcr):
@@ -273,14 +269,13 @@ def build_description(meta_row, dataset_name, dcr):
     source      = meta_row.get("source", "")
     assay_type  = meta_row.get("assay_type", "")
     label       = meta_row.get("label", "")
-    pathogen    = meta_row.get("pathogen", "")
     n_assays    = int(meta_row["n_assays"]) if not pd.isna(meta_row.get("n_assays", np.nan)) else None
     n_compounds = int(meta_row["final_compounds"])
     _an = meta_row.get("added_negatives", 0)
     _ad = meta_row.get("added_decoys", 0)
     n_added     = (0 if pd.isna(_an) else int(_an)) + (0 if pd.isna(_ad) else int(_ad))
 
-    added_str     = f", incl. {n_added} added negatives" if n_added > 0 else ""
+    added_str     = f"; incl. {n_added} added negatives" if n_added > 0 else ""
     threshold_str = f"Recommended threshold: {round(dcr, 3)}."
     category      = _CATEGORY.get(label, "")
 
@@ -295,27 +290,30 @@ def build_description(meta_row, dataset_name, dcr):
     else:
         assays_str = f" of {n_assays} assay{'s' if n_assays != 1 else ''}" if n_assays else ""
 
-    # ChEMBL only: state the unit(s) actually present in this pool's molecules.
-    unit_str = ""
+    # ChEMBL only: name the single most-occurring activity type (e.g. MIC, IC50) as
+    # "predominantly X" — a pool typically mixes several types, so phrasing this as
+    # the sole activity type would be misleading. activity_types is already
+    # frequency-ordered by 01_download_datasets_chembl.py (from
+    # 22_binarisation_summary.csv), so the first entry is that pool's most common.
+    activity_type_str = ""
     if source == "chembl":
-        units = _resolve_units(pathogen, dataset_name)
-        if len(units) == 1:
-            unit_str = f", unit: {units[0]}"
-        elif len(units) > 1:
-            unit_str = f", including units such as {', '.join(units)}"
+        activity_types = meta_row.get("activity_types")
+        types = [] if pd.isna(activity_types) else str(activity_types).split("|")
+        if types:
+            activity_type_str = f"; predominantly {_display_activity_type(types[0])}"
 
     if source == "pubchem":
         if bool(meta_row.get("is_merged", False)) and not pd.isna(meta_row.get("n_members", np.nan)):
             body = (f"PubChem whole-cell organism screen merged from "
-                    f"{int(meta_row['n_members'])} assays (n={n_compounds}{added_str})")
+                    f"{int(meta_row['n_members'])} assays ({n_compounds} compounds{added_str})")
         else:
-            body = f"PubChem whole-cell organism assay AID {dataset_name} (n={n_compounds}{added_str})"
+            body = f"PubChem whole-cell organism assay AID {dataset_name} ({n_compounds} compounds{added_str})"
     elif assay_type == "pool":
-        body = f"ChEMBL {category} signal-based pool{assays_str} (n={n_compounds}{added_str}{unit_str})"
+        body = f"ChEMBL {category} signal-based pool{assays_str} ({n_compounds} compounds{added_str}{activity_type_str})"
     elif assay_type == "catchall":
-        body = f"ChEMBL {category} low-data catch-all pool{assays_str} (n={n_compounds}{added_str}{unit_str})"
+        body = f"ChEMBL {category} low-data catch-all pool{assays_str} ({n_compounds} compounds{added_str}{activity_type_str})"
     else:
-        body = f"dataset {dataset_name} (n={n_compounds}{added_str})"
+        body = f"dataset {dataset_name} ({n_compounds} compounds{added_str})"
 
     return f"Probability from sub-model trained on {body}. {threshold_str}"
 
@@ -340,36 +338,47 @@ def descriptors_in_dir(parent, sub_models):
 # metadata.yml patcher
 # ---------------------------------------------------------------------------
 
-# Captures the pathogen short name from the existing Interpretation line. The
-# anchor is the literal "ChEMBL" that always appears after "from" — but the
-# words between "from" and "ChEMBL" vary across pathogens ("7", "32",
-# "a single", "five", etc.), so we match them greedily-lazily. DOTALL is
-# required because campylobacter's interpretation wraps after the short name.
-_SHORT_NAME_RE = re.compile(
-    r"Probability of antimicrobial activity against\s+(.+?)\s+from\s+.+?ChEMBL",
-    flags=re.DOTALL,
+# Captures the full species name from the existing Title line (e.g. "Antinicrobial
+# activity prediction against Acinetobacter baumannii from public ChEMBL data") —
+# consistently the full binomial name across all 15 pathogens' published metadata.yml,
+# unlike the Interpretation line, which mixes full and abbreviated forms depending on
+# who wrote it. DOTALL is required because Title wraps across lines for most pathogens.
+_TITLE_NAME_RE = re.compile(
+    r"^Title:.*?against\s+(.+?)\s+from",
+    flags=re.MULTILINE | re.DOTALL,
 )
 
 
-def patch_metadata(existing_yaml, n_models, has_pubchem):
-    """Patch Output Dimension, Deployment, and Interpretation. Everything else is preserved
-    byte-for-byte. The file uses flow-style lists so single-line regex replacements are safe.
-    """
-    short_name_match = _SHORT_NAME_RE.search(existing_yaml)
-    if not short_name_match:
-        sys.exit(
-            "FAIL: could not parse the short pathogen name from the existing metadata.yml's "
-            "Interpretation line. Expected '... against <X> from N ChEMBL-trained sub-models ...'."
-        )
-    # Normalize whitespace — the published file may wrap the short name across
-    # lines as a YAML folded scalar (e.g. "Enterococcus\n  faecium"), and we
-    # need a single-line short name to splice into the new Interpretation.
-    short_name = re.sub(r"\s+", " ", short_name_match.group(1)).strip()
+def patch_metadata(existing_yaml, n_models, has_pubchem, dr_activity_type, sp_activity_type):
+    """Patch Output Dimension, Deployment, Description, and Interpretation. Everything else
+    is preserved byte-for-byte.
 
-    # Output Dimension
+    Description and Interpretation are DRAFTS: regenerated each refresh from the same
+    building blocks (full species name, ChEMBL/PubChem mix, sub-model count, a
+    representative DR/SP activity type each), closely mirroring the existing wording
+    style — meant to be reviewed and edited per pathogen before push, not treated as
+    already-approved copy. dr_activity_type/sp_activity_type are each a single type
+    (e.g. "MIC", "Inhibition") picked by the caller — "MIC"/"INHIBITION" if present
+    among kept sub-models, else whichever type is most common — or None if that
+    category has no kept ChEMBL sub-models at all.
+    """
+    name_match = _TITLE_NAME_RE.search(existing_yaml)
+    if not name_match:
+        sys.exit(
+            "FAIL: could not parse the full species name from the existing metadata.yml's "
+            "Title line. Expected '... against <X> from public ... data'."
+        )
+    # Normalize whitespace — the published file may wrap the name across lines as a
+    # YAML folded scalar (e.g. "Enterococcus\n  faecium"), and we need a single-line
+    # name to splice into the new Description/Interpretation.
+    full_name = re.sub(r"\s+", " ", name_match.group(1)).strip()
+
+    # Output Dimension — no consensus column when there's only one sub-model
+    # (mirrors consensus.py's own single-model shortcut).
+    output_dim = n_models if n_models == 1 else 1 + n_models
     new_yaml, n_subs = re.subn(
         r"^(Output Dimension:\s*).*$",
-        rf"\g<1>{1 + n_models}",
+        rf"\g<1>{output_dim}",
         existing_yaml,
         count=1,
         flags=re.MULTILINE,
@@ -390,12 +399,50 @@ def patch_metadata(existing_yaml, n_models, has_pubchem):
     if n_subs != 1:
         sys.exit("FAIL: no 'Deployment:' line found in metadata.yml.")
 
+    sources_str        = "ChEMBL and PubChem" if has_pubchem else "ChEMBL"
+    sources_trained_str = "ChEMBL- and PubChem" if has_pubchem else "ChEMBL"  # dangling hyphen for "-trained"
+
+    # Description — same folded-scalar block style as Interpretation; DRAFT, see docstring.
+    # Closely mirrors the existing wording template (species name + source list are the
+    # only parts that vary), rather than describing the internal scoring mechanism.
+    assay_clauses = []
+    if sp_activity_type:
+        assay_clauses.append(f"single-point ({sp_activity_type})")
+    if dr_activity_type:
+        assay_clauses.append(f"dose-response ({dr_activity_type})")
+    assay_clause = " and ".join(assay_clauses) if assay_clauses else "single-point and dose-response"
+
+    new_description = (
+        f"Description: Bioactivity prediction of growth inhibition in {full_name}, "
+        f"trained as binary (active/inactive) classifiers from publicly available data "
+        f"in {sources_str}. Independent models are trained on multiple bioactivity "
+        f"datasets, corresponding to {assay_clause} assays, among others. A ranking "
+        f"score is provided for each model alongside a combined consensus score."
+    )
+    new_yaml, n_subs = re.subn(
+        r"^Description:.*?(?=\n[A-Z])",
+        new_description,
+        new_yaml,
+        count=1,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if n_subs != 1:
+        sys.exit("FAIL: no 'Description:' line found in metadata.yml.")
+
     # Interpretation — match the whole block (the original may be wrapped across
     # multiple indented continuation lines, which YAML treats as a folded scalar).
-    new_interp = (
-        f"Interpretation: Probability of antimicrobial activity against {short_name} "
-        f"from {n_models} {'ChEMBL- and PubChem' if has_pubchem else 'ChEMBL'}-trained sub-models, plus a quality-weighted consensus score."
-    )
+    # No consensus clause (and singular "sub-model") when there's only one.
+    if n_models == 1:
+        new_interp = (
+            f"Interpretation: Probability of antimicrobial activity against {full_name} "
+            f"from {n_models} {sources_trained_str}-trained sub-model."
+        )
+    else:
+        new_interp = (
+            f"Interpretation: Probability of antimicrobial activity against {full_name} "
+            f"from {n_models} {sources_trained_str}-trained sub-models, plus a "
+            f"quality-weighted consensus score."
+        )
     new_yaml, n_subs = re.subn(
         r"^Interpretation:.*?(?=\n[A-Z])",
         new_interp,
@@ -447,7 +494,9 @@ def generate_run_output(repo_dir, pathogen, sub_models, reports_csv_path,
             src = os.path.join(MODELS_DIR, pathogen, sub)
             if not os.path.isdir(src):
                 sys.exit(f"FAIL: missing checkpoints for sub-model '{sub}' at {src}.")
-            shutil.copytree(src, os.path.join(ckpt, "models", sub))
+            # Destination dir name must match the (lowercased) name main.py reads from
+            # run_columns.csv, even though the source dir keeps its original casing.
+            shutil.copytree(src, os.path.join(ckpt, "models", sub.lower()))
         shutil.copy2(reports_csv_path, os.path.join(ckpt, "reports.csv"))
 
         shutil.copy2(run_columns_csv_path, os.path.join(framework_dst, "columns", "run_columns.csv"))
@@ -517,6 +566,10 @@ def write_diff_summary(path, pathogen, eosXXXX, new_df, old_reports_csv,
             lines.append(f"  {m:40s}  {co:>10.4f} -> {cn:>10.4f}")
         lines.append("")
 
+    new_thresh_str = (
+        f"{new_threshold:.3f}" if new_threshold is not None
+        else "N/A (single sub-model — no consensus score)"
+    )
     old_run_columns = os.path.join(repo_dir, "model", "framework", "columns", "run_columns.csv")
     if os.path.exists(old_run_columns):
         with open(old_run_columns) as f:
@@ -524,10 +577,10 @@ def write_diff_summary(path, pathogen, eosXXXX, new_df, old_reports_csv,
                 if line.startswith("consensus_score"):
                     m = re.search(r"Recommended threshold:\s*(\d+\.\d+)", line)
                     if m:
-                        lines.append(f"Consensus threshold: {float(m.group(1)):.3f} (old)  ->  {new_threshold:.3f} (new)")
+                        lines.append(f"Consensus threshold: {float(m.group(1)):.3f} (old)  ->  {new_thresh_str} (new)")
                     break
     else:
-        lines.append(f"Consensus threshold (new): {new_threshold:.3f}")
+        lines.append(f"Consensus threshold (new): {new_thresh_str}")
     lines.append("")
 
     old_models_dir = os.path.join(repo_dir, "model", "checkpoints", "models")
@@ -600,6 +653,14 @@ def main():
                         help="Don't delete the tmp/ staging dir (debugging).")
     args = parser.parse_args()
 
+    if not CONDA_SH:
+        sys.exit(
+            "FAIL: CONDA_SH environment variable is not set. Export it to your "
+            "machine's conda.sh, e.g. export CONDA_SH=~/miniconda3/etc/profile.d/conda.sh"
+        )
+    if not os.path.exists(CONDA_SH):
+        sys.exit(f"FAIL: CONDA_SH does not exist: {CONDA_SH}")
+
     pathogen = args.pathogen
     repo_dir = os.path.abspath(args.repo_dir)
     if not os.path.isdir(repo_dir):
@@ -616,46 +677,67 @@ def main():
     meta_df    = pd.read_csv(METADATA_PATH)
     with open(K_STAR_PATH) as f:
         k_star_map = json.load(f)
-    if pathogen not in k_star_map:
-        sys.exit(
-            f"FAIL: no k_star entry for '{pathogen}' in {K_STAR_PATH}. "
-            "Run scripts/12b_fit_transformation.py first."
-        )
-    k_star = float(k_star_map[pathogen]["k_star"])
-    print(f"      k_star: {k_star:.4f}")
 
     print(f"[2/8] Filter + sort reports for {pathogen} ({eosXXXX})")
     df = filter_and_sort(reports_df, meta_df, pathogen)
     sub_models = df["model_name"].tolist()
     print(f"      {len(sub_models)} sub-models kept: {sub_models}")
 
+    # A single surviving sub-model has nothing to build a consensus from — mirrors
+    # consensus.py's own compute_consensus() shortcut (len(model_names) == 1). These
+    # pathogens correctly have no k_star fit by scripts/12b_fit_transformation.py.
+    has_consensus = len(sub_models) > 1
+    if has_consensus:
+        if pathogen not in k_star_map:
+            sys.exit(
+                f"FAIL: no k_star entry for '{pathogen}' in {K_STAR_PATH}. "
+                "Run scripts/12b_fit_transformation.py first."
+            )
+        k_star = float(k_star_map[pathogen]["k_star"])
+        print(f"      k_star: {k_star:.4f}")
+    else:
+        k_star = None
+        print(f"      single sub-model — consensus/k_star not applicable")
+
     cols_to_drop = [c for c in _DROP_COLS if c in df.columns]
     reports_out = os.path.join(out_dir, "reports.csv")
-    df.drop(columns=cols_to_drop).to_csv(reports_out, index=False)
+    # Ersilia requires lowercase column names in the model's output; run_columns.csv's
+    # "name" values become those column headers. reports.csv's model_name must match
+    # (main.py looks weights/cutoffs up in reports.csv by the same name it read from
+    # run_columns.csv). The on-disk checkpoint dirs under output/09_models/ keep their
+    # original (uppercase) casing from the training pipeline — only these published,
+    # Hub-facing names are lowercased.
+    df_out = df.drop(columns=cols_to_drop).copy()
+    df_out["model_name"] = df_out["model_name"].str.lower()
+    df_out.to_csv(reports_out, index=False)
 
     print(f"[3/8] Build run_columns.csv (faithful threshold + per-assay descriptions)")
-    cutoffs   = [float(df.set_index("model_name").loc[m, "decision_cutoff_rank"]) for m in sub_models]
-    w_quality = [df.set_index("model_name").loc[m, _W_COLS].values for m in sub_models]
-    cons_thresh = round(consensus_threshold(cutoffs, w_quality, k_star), 3)
-    print(f"      consensus threshold (new): {cons_thresh}")
-
     path_meta = meta_df[meta_df["pathogen"] == pathogen].set_index("name")
-    rows = [{
-        "name":      "consensus_score",
-        "type":      "float",
-        "direction": "high",
-        "description": (
-            f"Tanh-transformed quality-weighted consensus probability across the "
-            f"{len(sub_models)} sub-models. Recommended threshold: {cons_thresh}."
-        ),
-    }]
+    rows = []
+    if has_consensus:
+        cutoffs   = [float(df.set_index("model_name").loc[m, "decision_cutoff_rank"]) for m in sub_models]
+        w_quality = [df.set_index("model_name").loc[m, _W_COLS].values for m in sub_models]
+        cons_thresh = round(consensus_threshold(cutoffs, w_quality, k_star), 3)
+        print(f"      consensus threshold (new): {cons_thresh}")
+        rows.append({
+            "name":      "consensus_score",
+            "type":      "float",
+            "direction": "high",
+            "description": (
+                f"Tanh-transformed quality-weighted consensus probability across the "
+                f"{len(sub_models)} sub-models. Recommended threshold: {cons_thresh}."
+            ),
+        })
+    else:
+        cons_thresh = None
+
     for _, model_row in df.iterrows():
         dataset_name = model_row["name"]
         if dataset_name not in path_meta.index:
             sys.exit(f"FAIL: dataset '{dataset_name}' missing from 07_datasets_metadata.csv.")
         meta_row = path_meta.loc[dataset_name]
         rows.append({
-            "name":      model_row["model_name"],
+            "name":      model_row["model_name"].lower(),
             "type":      "float",
             "direction": "high",
             "description": build_description(meta_row, dataset_name, model_row["decision_cutoff_rank"]),
@@ -677,16 +759,46 @@ def main():
         f.write(consensus_src)
 
     print(f"[5/8] Patch metadata.yml")
-    kept_sources = set(
-        meta_df[(meta_df["pathogen"] == pathogen) & (meta_df["name"].isin(df["name"]))]["source"]
-    )
+    kept_meta = meta_df[(meta_df["pathogen"] == pathogen) & (meta_df["name"].isin(df["name"]))]
+    kept_sources = set(kept_meta["source"])
     has_pubchem = "pubchem" in kept_sources
     print(f"      sources in kept sub-models: {sorted(kept_sources)}")
+
+    # Pick one representative ChEMBL activity type per category (DR/SP) for the
+    # Description draft: "MIC" / "INHIBITION" if present anywhere among kept
+    # sub-models (the conventional defaults), else whichever type most often tops
+    # an individual pool's own frequency-ordered activity_types (from
+    # 01_download_datasets_chembl.py, itself ordered by real per-assay frequency).
+    dr_types_seen, sp_types_seen = set(), set()
+    dr_top_votes, sp_top_votes = {}, {}
+    for _, row in kept_meta[kept_meta["source"] == "chembl"].iterrows():
+        types = [] if pd.isna(row.get("activity_types")) else str(row["activity_types"]).split("|")
+        if not types:
+            continue
+        is_dr = row.get("label") == "DR"
+        (dr_types_seen if is_dr else sp_types_seen).update(types)
+        votes = dr_top_votes if is_dr else sp_top_votes
+        votes[types[0]] = votes.get(types[0], 0) + 1  # types[0] = this pool's most common type
+
+    def _pick_default(types_seen: set, votes: dict, default: str) -> str | None:
+        if default in types_seen:
+            return default
+        if not votes:
+            return None
+        return sorted(votes, key=lambda t: (-votes[t], t))[0]
+
+    dr_activity_type = _pick_default(dr_types_seen, dr_top_votes, "MIC")
+    sp_activity_type = _pick_default(sp_types_seen, sp_top_votes, "INHIBITION")
+    if sp_activity_type:
+        sp_activity_type = _display_activity_type(sp_activity_type)
+
     metadata_src = os.path.join(repo_dir, "metadata.yml")
     if not os.path.exists(metadata_src):
         sys.exit(f"FAIL: {metadata_src} not found.")
     with open(metadata_src) as f:
-        new_yaml = patch_metadata(f.read(), len(sub_models), has_pubchem)
+        new_yaml = patch_metadata(
+            f.read(), len(sub_models), has_pubchem, dr_activity_type, sp_activity_type
+        )
     metadata_out = os.path.join(out_dir, "metadata.yml")
     with open(metadata_out, "w") as f:
         f.write(new_yaml)
