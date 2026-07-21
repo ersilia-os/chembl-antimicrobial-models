@@ -30,7 +30,8 @@ path_to_output="$REPO_ROOT/output/13_drugbank_ersilia/${model}.csv"
 
 mkdir -p "$(dirname "$path_to_output")"
 
+trap 'ersilia delete "$model"' EXIT
+
 ersilia fetch "$model"
 ersilia serve "$model"
 ersilia run -i "$path_to_csv" -o "$path_to_output" -b "$batch_size"
-ersilia delete "$model"

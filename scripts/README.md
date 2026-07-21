@@ -140,6 +140,8 @@ Datasets whose minority class is smaller than `N_FOLDS` (too few actives/inactiv
 
 Reads all per-dataset CV reports from `output/09_reports/` (keyed by dataset `name` — no positional recomputation) and collapses them into `output/10_reports/`. Applies a hard filter: datasets with mean CV AUROC < `MIN_AUROC` are excluded and recorded in `10_discarded_models.csv`. Retained datasets are written to `10_reports.csv`, one row per dataset.
 
+`10_discarded_models.csv` also reports, per discarded dataset, a compound-overlap breakdown against that pathogen's accepted datasets: `compounds` (total), `actives` (bin=1 count), `lost` (present nowhere else), `%_lost` (lost as a fraction of the accepted chemical space's own size), `ambiguous` (accepted datasets already disagree amongst themselves), `concordant` (accepted label agrees with the discarded dataset's own label), `conflict` (accepted label disagrees) — with `lost + ambiguous + concordant + conflict == compounds`.
+
 Beyond aggregated metrics (mean/std of AUROC, AUPRC, BEDROC), each dataset gets a composite quality weight from six 0–1 components: **w1** real-negative fraction = 1 − (added_negatives + added_decoys)/n_negatives (penalises negatives borrowed from other assays / decoy fallback), **w2** mean CV AUROC, **w3** AUPRC enrichment over prevalence, **w4** BEDROC enrichment over random, **w5** total compound count, **w6** active count. (The old flat dataset-type weight was removed and the rest renumbered.) All components are guarded against NaN/inf (baseline clamped away from 0/1, zero-negative and zero-sum guards). `final_weight` is their mean; `final_normalized_weight` rescales within each pathogen to sum to 100. A per-compound seventh weight (**w7**, the decision-cutoff ramp) is added only in the consensus (steps 12b/14).
 
 **Threshold:** `MIN_AUROC = 0.7` (from `src/default.py`).
@@ -160,17 +162,28 @@ Downloads DrugBank SMILES from a public GitHub mirror, validates them with RDKit
 
 ---
 
-## 12a_predict_drugbank.py
+## 12a_predict_drugbank.py / 12a_run_array.sh *(HPC only)*
 
-Predicts DrugBank scores for each pathogen using the trained LazyQSAR models, across every predict type in `PREDICT_TYPES` (`rank`, `proba`, `score`, `logit`, `lift`, `binary`), run in series. Points LazyQSAR at the project `output/08_weights/` directory (via a `HOME` override). Accepts `--pathogen <code>` (single output) or `--all_pathogens` (one pass per type, then split per pathogen). Output: every type (incl. `rank`) writes to `output/12_drugbank/{type}/{pathogen}.csv`, with `smiles` + one column per sub-model.
+Predicts DrugBank scores for one (pathogen, predict type) pair per SLURM array task — 90 tasks total (15 pathogens × 6 `PREDICT_TYPES`: `rank`, `proba`, `score`, `logit`, `lift`, `binary`). `task_id` maps to the pair via `divmod(task_id, 6)` over the fixed `PATHOGENS` list in `src/default.py`. Points LazyQSAR at the project `output/08_weights/` directory (via a `HOME` override). Output: `output/12_drugbank/{type}/{pathogen}.csv`, with `smiles` + one column per sub-model. Skips instantly if its target CSV already exists, so it can run safely alongside a concurrent local run. Submit via `sbatch --chdir=<repo_root> --array=0-89%20 scripts/12a_run_array.sh` (requires `output/12_logs/` to already exist — created by script 11).
 
-**Descriptor note:** the lazy-qsar multi-model `predict()` API computes descriptors once per featurizer *within* a call but discards them afterwards, so descriptors are recomputed once per predict type (N types ⇒ N× descriptor cost). The `_ensemble_cache` from lazy-qsar issue #26 is a separate single-model code path not used here.
+**Local alternative:** `12a_predict_drugbank_local.py` — runs every predict type in series in one process, sharing descriptors across all models within each type (cheaper per-model, but no cluster parallelism). Accepts `--pathogen <code>` (single output) or `--all_pathogens` (one descriptor pass per type, scoring every pathogen's models at once, then split per pathogen).
+
+**Descriptor note:** the lazy-qsar multi-model `predict()` API computes descriptors once per featurizer *within* a call but discards them afterwards, so descriptors are recomputed once per predict type (N types ⇒ N× descriptor cost) in the local script, and once per (pathogen, type) task in the array version. The `_ensemble_cache` from lazy-qsar issue #26 is a separate single-model code path not used here.
 
 ---
 
 ## 12b_fit_transformation.py
 
-For each pathogen, reads the per-model **rank** predictions from `output/12_drugbank/rank/{pathogen}.csv` (asserts they are on the [0,1] scale) and solves the tanh steepness `k*` such that the transformed consensus IQR matches the average per-model IQR, then fits a saturating-exponential meta-curve `k(M) = 2·(1 + a·(1 − e^{−M/τ}))` over the empirical `(M, k*)` points. The fitted `a` and `τ` are written to `output/12_drugbank/12b_tanh_fit.json` and consumed by script 14. Needs ≥2 pathogens with `k*>0` to fit; otherwise it warns and leaves the existing fit untouched. A diagnostic figure and per-pathogen table are also written alongside.
+For each pathogen, reads the per-model **rank** predictions from `output/12_drugbank/rank/{pathogen}.csv` (asserts they are on the [0,1] scale). Before any weighting or fitting, computes the pairwise Pearson correlation between the pathogen's models (folded in from the former script 20) as a diagnostic for how much averaging actually reduces variance. Then solves the tanh steepness `k*` such that the transformed consensus IQR matches the average per-model IQR — once for the full M-model consensus, and once per leave-one-out exclusion (`k_star_loo`, targeting the average IQR of the remaining M-1 models). There is **no meta-curve / global fit** across pathogens: each pathogen, and each of its LOO exclusions, keeps its own directly-solved `k*`.
+
+If the target IQR is unreachable for a given consensus (same-side IQR ceiling below target — see the `_solve_k_star` docstring), the peak-achievable `k` is used instead of failing outright, since it is provably the closest approximation possible; this is flagged via a `*_exact` boolean rather than silently passed off as an exact match. Every pathogen and every one of its LOO exclusions therefore always gets a usable k — nothing is omitted or left null.
+
+Outputs to `output/12_drugbank/`:
+- `12b_fit_transformation.csv` — one row per pathogen: `M`, `avg_model_iqr`, `consensus_iqr`, `k_star`, `k_star_exact`, `mean_pairwise_corr`, `median_pairwise_corr`.
+- `12b_k_star_loo.csv` — one row per `(pathogen, excluded_model)`: `avg_model_iqr_loo`, `consensus_iqr_loo`, `k_star_loo`, `k_star_loo_exact`.
+- `12b_k_star.json` — `{pathogen: {k_star, k_star_exact, M, k_star_loo: {model: k}, k_star_loo_exact: {model: bool}}}`, consumed by scripts 14 and 18.
+- `12b_fit_transformation.png` — (i) tanh curve for the min-`k*` and max-`k*` pathogens, (ii) `k*` vs `M` scatter, pathogen-labeled (no fitted line).
+- `12b_pairwise_correlation_distributions.png` — KDE of pairwise correlations, one curve per pathogen (formerly script 20's output; script 20 has been removed).
 
 ---
 
@@ -182,7 +195,7 @@ Runs a single Ersilia Hub model on the DrugBank SMILES file (`data/processed/11_
 
 ## 14_consensus_scoring.py
 
-Computes a weighted consensus score per DrugBank compound for each pathogen. Reads per-model prob_rank predictions from `output/12_drugbank/rank/{pathogen}.csv` (asserts [0,1] scale) and quality weights (w1–w6) from `output/10_reports/10_reports.csv`. A per-compound, per-model seventh weight (w7) linearly rewards predictions above each model's decision cutoff. The weighted mean prob_rank is passed through a tanh transformation that restores IQR compression caused by averaging; steepness k depends on the number of models via a saturating-exponential fit. Outputs weighted and unweighted variants (with and without the tanh transform) to `output/14_consensus/`. Accepts `--pathogen <code>` for a single pathogen.
+Computes a weighted consensus score per DrugBank compound for each pathogen. Reads per-model prob_rank predictions from `output/12_drugbank/rank/{pathogen}.csv` (asserts [0,1] scale) and quality weights (w1–w6) from `output/10_reports/10_reports.csv`. A per-compound, per-model seventh weight (w7) linearly rewards predictions above each model's decision cutoff. The weighted mean prob_rank is passed through a tanh transformation that restores IQR compression caused by averaging; the steepness `k_star` (full consensus) and `k_star_loo` (per leave-one-out exclusion) are loaded directly per pathogen from `output/12_drugbank/12b_k_star.json` — no shared meta-curve across pathogens. A `k_star`/`k_star_loo` that isn't an exact IQR match (`*_exact = False` — the target was unreachable, see 12b) is still applied and used as-is, since it's the closest achievable approximation; this is only printed, not treated as a failure. Only if the whole pathogen is missing from `12b_k_star.json` are its outputs left untransformed. Outputs weighted and unweighted variants (with and without the tanh transform) to `output/14_consensus/`. Accepts `--pathogen <code>` for a single pathogen.
 
 ---
 
@@ -214,11 +227,11 @@ Generates a data and model quality dashboard per pathogen. For each pathogen it 
 
 ## 18_update_ersilia_model.py
 
-Refreshes an already-incorporated Ersilia Hub model with newly trained checkpoints. Per pathogen, reads `output/10_reports/10_reports.csv`, `output/07_datasets/07_datasets_metadata.csv`, `output/09_models/{pathogen}/`, and `output/12_drugbank/12b_tanh_fit.json`; writes a complete refresh package to `output/18_emh_files/{pathogen}/`:
+Refreshes an already-incorporated Ersilia Hub model with newly trained checkpoints. Per pathogen, reads `output/10_reports/10_reports.csv`, `output/07_datasets/07_datasets_metadata.csv`, `output/09_models/{pathogen}/`, and `output/12_drugbank/12b_k_star.json`; writes a complete refresh package to `output/18_emh_files/{pathogen}/`:
 
 - `reports.csv` — quality report, filtered to `auroc_mean >= MIN_AUROC` and sorted by `(source, label, n_compounds desc)`.
 - `run_columns.csv` — `consensus_score` row + one row per kept sub-model. Descriptions describe the dataset family (ChEMBL DR/SP signal-based pool or low-data catch-all, or PubChem whole-cell organism screen), its constituent-assay count, compound count, and any added negatives — no per-assay concentration cutoff (pool `cutoff` is a Youden score).
-- `consensus.py` — canonical family template with `(a, τ)` from the 12b fit baked in.
+- `consensus.py` — canonical family template with the pathogen's fixed `k_star` baked in.
 - `metadata.yml` — patched in place from the clone's existing file: `Output Dimension`, `Deployment` (block-style `- Local` only), and `Interpretation` (regenerated with new N).
 - `install.yml` — pins `ersilia-pack-utils` and `lazyqsar` versions and the per-pathogen descriptor `--only` list.
 - `run_output.csv` — generated by running `bash run.sh` in a temp staging dir built from the clone + new artifacts.
@@ -227,7 +240,7 @@ Refreshes an already-incorporated Ersilia Hub model with newly trained checkpoin
 
 Requires `--pathogen <p>` and `--repo-dir <path-to-clone>`. After the script, the user (with Claude) reviews `DIFF_SUMMARY.txt`, runs the copy commands, `git diff` reviews, and pushes direct to `main` on `ersilia-os/{eosXXXX}` (no PR).
 
-**Consensus threshold (faithful):** computed by applying `consensus.py`'s W1-W6 (quality) + W7 (per-compound ramp) formula to the per-sub-model `decision_cutoff_rank` values (W7 = 0 at the boundary by construction), then the tanh transform with `(a, τ)` from `output/12_drugbank/12b_tanh_fit.json`. Same `(a, τ)` baked into the shipped `consensus.py`, so the recommended threshold and the production transform always agree.
+**Consensus threshold (faithful):** computed by applying `consensus.py`'s W1-W6 (quality) + W7 (per-compound ramp) formula to the per-sub-model `decision_cutoff_rank` values (W7 = 0 at the boundary by construction), then the tanh transform with the pathogen's fixed `k_star` from `output/12_drugbank/12b_k_star.json`. The same `k_star` is baked into the shipped `consensus.py`, so the recommended threshold and the production transform always agree.
 
 ---
 

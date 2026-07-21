@@ -10,7 +10,7 @@ Inputs:
   output/10_reports/10_reports.csv         — per-sub-model metrics + weights
   output/07_datasets/07_datasets_metadata.csv — assay context for descriptions
   output/09_models/{pathogen}/             — new sub-model checkpoints
-  output/12_drugbank/12b_tanh_fit.json     — fitted (a, tau) for consensus tanh
+  output/12_drugbank/12b_k_star.json       — pathogen's fixed k_star for consensus tanh
   {repo-dir}/metadata.yml                  — current published metadata, patched in place
   {repo-dir}/model/framework/{code,run.sh,examples}/ — seeds the staging dir
 
@@ -50,7 +50,7 @@ REPO_ROOT     = os.path.abspath(os.path.join(root, ".."))
 REPORTS_PATH  = os.path.join(REPO_ROOT, "output", "10_reports", "10_reports.csv")
 METADATA_PATH = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
 MODELS_DIR    = os.path.join(REPO_ROOT, "output", "09_models")
-TANH_FIT_PATH = os.path.join(REPO_ROOT, "output", "12_drugbank", "12b_tanh_fit.json")
+K_STAR_PATH   = os.path.join(REPO_ROOT, "output", "12_drugbank", "12b_k_star.json")
 OUTPUT_DIR    = os.path.join(REPO_ROOT, "output", "18_emh_files")
 TMP_DIR       = os.path.join(REPO_ROOT, "tmp")
 
@@ -98,8 +98,9 @@ Mirrors chembl-antimicrobial-models/scripts/14_consensus_scoring.py:
   decision_cutoff_rank.
 - All 7 weights are uniformly averaged into an effective per-compound,
   per-sub-model weight; the consensus is the weighted mean of prob_ranks;
-  a tanh transform then restores the IQR that averaging compresses
-  toward 0.5.
+  a tanh transform (fixed steepness k_star, solved for this pathogen by
+  scripts/12b_fit_transformation.py) then restores the IQR that averaging
+  compresses toward 0.5.
 
 NaN policy: if any sub-model returns NaN for a given compound, that
 compound's consensus_score is NaN (no weighting, no averaging). The
@@ -112,7 +113,7 @@ import numpy as np
 import pandas as pd
 
 _W_COLS = ["w1", "w2", "w3", "w4", "w5", "w6"]
-_TANH_A, _TANH_TAU = __TANH_A__, __TANH_TAU__
+_K_STAR = __K_STAR__
 
 
 def compute_consensus(R, cols_ordered, model_names, checkpoints_dir):
@@ -167,8 +168,7 @@ def compute_consensus(R, cols_ordered, model_names, checkpoints_dir):
         zero = denom == 0.0          # all weights 0 for a compound -> fall back to plain mean
         if zero.any():
             raw[zero] = pr[zero].mean(axis=1)
-        k   = 2.0 * (1.0 + _TANH_A * (1.0 - np.exp(-M / _TANH_TAU)))
-        consensus[~nan_rows] = 0.5 + 0.5 * np.tanh(k * (raw - 0.5)) / np.tanh(k / 2)
+        consensus[~nan_rows] = 0.5 + 0.5 * np.tanh(_K_STAR * (raw - 0.5)) / np.tanh(_K_STAR / 2)
 
     results = np.round(np.column_stack([consensus, prob_ranks]), 4)
     header  = ["consensus_score", *model_names]
@@ -207,7 +207,7 @@ def filter_and_sort(reports_df, meta_df, pathogen):
 # Consensus threshold — faithful main.py formula at the per-sub-model boundary
 # ---------------------------------------------------------------------------
 
-def consensus_threshold(cutoffs, w_quality, tanh_a, tanh_tau):
+def consensus_threshold(cutoffs, w_quality, k_star):
     """Apply consensus.py's formula to per-sub-model decision_cutoff_rank values,
     treating them as the prob_ranks of a compound sitting exactly on each
     sub-model's boundary. W7 = 0 at the boundary by construction.
@@ -224,8 +224,7 @@ def consensus_threshold(cutoffs, w_quality, tanh_a, tanh_tau):
     w_all[:, :,  w_quality.shape[1]] = w7
     w_eff = np.average(w_all, axis=-1, weights=np.ones(n_w))
     raw = (prob_ranks * w_eff).sum(axis=1) / w_eff.sum(axis=1)
-    k = 2.0 * (1.0 + tanh_a * (1.0 - np.exp(-M / tanh_tau)))
-    return float((0.5 + 0.5 * np.tanh(k * (raw - 0.5)) / np.tanh(k / 2)).item())
+    return float((0.5 + 0.5 * np.tanh(k_star * (raw - 0.5)) / np.tanh(k_star / 2)).item())
 
 
 # ---------------------------------------------------------------------------
@@ -566,10 +565,15 @@ def main():
     print(f"[1/8] Load inputs")
     reports_df = pd.read_csv(REPORTS_PATH)
     meta_df    = pd.read_csv(METADATA_PATH)
-    with open(TANH_FIT_PATH) as f:
-        fit = json.load(f)
-    tanh_a, tanh_tau = float(fit["a"]), float(fit["tau"])
-    print(f"      tanh fit: a={tanh_a:.4f}, tau={tanh_tau:.4f}")
+    with open(K_STAR_PATH) as f:
+        k_star_map = json.load(f)
+    if pathogen not in k_star_map:
+        sys.exit(
+            f"FAIL: no k_star entry for '{pathogen}' in {K_STAR_PATH}. "
+            "Run scripts/12b_fit_transformation.py first."
+        )
+    k_star = float(k_star_map[pathogen]["k_star"])
+    print(f"      k_star: {k_star:.4f}")
 
     print(f"[2/8] Filter + sort reports for {pathogen} ({eosXXXX})")
     df = filter_and_sort(reports_df, meta_df, pathogen)
@@ -583,7 +587,7 @@ def main():
     print(f"[3/8] Build run_columns.csv (faithful threshold + per-assay descriptions)")
     cutoffs   = [float(df.set_index("model_name").loc[m, "decision_cutoff_rank"]) for m in sub_models]
     w_quality = [df.set_index("model_name").loc[m, _W_COLS].values for m in sub_models]
-    cons_thresh = round(consensus_threshold(cutoffs, w_quality, tanh_a, tanh_tau), 3)
+    cons_thresh = round(consensus_threshold(cutoffs, w_quality, k_star), 3)
     print(f"      consensus threshold (new): {cons_thresh}")
 
     path_meta = meta_df[meta_df["pathogen"] == pathogen].set_index("name")
@@ -615,15 +619,11 @@ def main():
 
     print(f"[4/8] Emit consensus.py (canonical template)")
     consensus_out = os.path.join(out_dir, "consensus.py")
-    # Bake the JSON-fitted (a, tau) into the shipped template so the production
-    # transform matches the recommended threshold (both derive from 12b_tanh_fit.json).
-    consensus_src = (
-        CONSENSUS_PY
-        .replace("__TANH_A__", repr(tanh_a))
-        .replace("__TANH_TAU__", repr(tanh_tau))
-    )
-    if "__TANH_A__" in consensus_src or "__TANH_TAU__" in consensus_src:
-        sys.exit("FAIL: tanh placeholders not substituted in consensus.py template.")
+    # Bake the pathogen's fixed k_star into the shipped template so the production
+    # transform matches the recommended threshold (both derive from 12b_k_star.json).
+    consensus_src = CONSENSUS_PY.replace("__K_STAR__", repr(k_star))
+    if "__K_STAR__" in consensus_src:
+        sys.exit("FAIL: k_star placeholder not substituted in consensus.py template.")
     with open(consensus_out, "w") as f:
         f.write(consensus_src)
 

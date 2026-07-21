@@ -10,13 +10,16 @@ weight[i,m] = average(W1..W6, W7[i,m], weights=W_WEIGHTS)
 score[i]    = sum_m(prob_rank[i,m] * weight[i,m]) / sum_m(weight[i,m])
 
 A tanh transformation is then applied to restore the IQR of the consensus scores
-toward the average IQR of the individual model prob_ranks. The steepness k depends
-only on M (number of models) via a saturating-exponential fit:
-  S(M) = 1 + a*(1-exp(-M/tau)),  k(M) = 2*S(M)
-The (a, tau) parameters are loaded from output/12_drugbank/12b_tanh_fit.json,
-produced by scripts/12b_fit_transformation.py.
-The full consensus column uses k(M); the leave-one-out excluded_* columns use
-k(M-1) since they average over one fewer model and shrink slightly less.
+toward the average IQR of the individual model prob_ranks. The steepness k* is
+solved directly per pathogen (no shared meta-curve across pathogens): the full
+consensus column uses the pathogen's own k_star; each leave-one-out excluded_*
+column uses the k_star_loo solved specifically for that exclusion (M-1 models).
+Both are loaded from output/12_drugbank/12b_k_star.json, produced by
+scripts/12b_fit_transformation.py. If the target IQR was unreachable for a given
+column (see 12b), its k is the closest achievable approximation rather than an
+exact match (flagged via k_star_exact/k_star_loo_exact and printed here) — every
+column still gets transformed. Only if the whole pathogen is missing from
+12b_k_star.json (12b hasn't been run for it) are its outputs left untransformed.
 The center is fixed at 0.5 (neutral point of the prob_rank scale), making the
 transformation independent of the compound set being scored. Dividing by tanh(k/2)
 normalises the curve through [0,0] and [1,1], guaranteeing scores above 0.5 always
@@ -51,14 +54,12 @@ REPORTS_PATH    = os.path.join(REPO_ROOT, "output", "10_reports", "10_reports.cs
 W_COLS    = ["w1", "w2", "w3", "w4", "w5", "w6"]  # quality weights from 10_reports
 W_WEIGHTS = np.ones(len(W_COLS) + 1)  # + w7 (per-compound cutoff ramp); change here to reweight
 
-# Saturating-exponential fit for IQR shrinking factor vs number of models.
-# S(M) = 1 + _TANH_A*(1-exp(-M/_TANH_TAU)),  k(M) = 2*S(M)
-# Parameters are produced by scripts/12b_fit_transformation.py.
-_TANH_FIT_PATH = os.path.join(REPO_ROOT, "output", "12_drugbank", "12b_tanh_fit.json")
-with open(_TANH_FIT_PATH) as _fh:
-    _fit = json.load(_fh)
-_TANH_A   = float(_fit["a"])
-_TANH_TAU = float(_fit["tau"])
+# Per-pathogen tanh steepness (full-model k_star + per-exclusion k_star_loo),
+# produced by scripts/12b_fit_transformation.py. No shared meta-curve across
+# pathogens: {pathogen: {"k_star": float, "M": int, "k_star_loo": {model: float|null}}}
+_K_STAR_PATH = os.path.join(REPO_ROOT, "output", "12_drugbank", "12b_k_star.json")
+with open(_K_STAR_PATH) as _fh:
+    _K_STAR_BY_PATHOGEN = json.load(_fh)
 
 
 def _compute_w7(prob_ranks: np.ndarray, cutoffs: np.ndarray) -> np.ndarray:
@@ -104,26 +105,27 @@ def _score_unweighted(prob_ranks: np.ndarray) -> np.ndarray:
     return prob_ranks.mean(axis=1)
 
 
-def _k_from_n_models(n: int) -> float:
-    """Steepness for the IQR-restoring tanh transform; depends only on number of models."""
-    s = 1.0 + _TANH_A * (1.0 - np.exp(-n / _TANH_TAU))
-    return 2.0 * s
-
-
 def _tanh_transform(x: np.ndarray, k: float) -> np.ndarray:
     return 0.5 + 0.5 * np.tanh(k * (x - 0.5)) / np.tanh(k / 2)
 
 
-def _apply_transform(df: pd.DataFrame, k_consensus: float, k_excluded: float) -> pd.DataFrame:
-    # consensus_score is built from M models; excluded_* columns from M-1 models.
-    # Each group gets its own k so the IQR-restoring strength matches the number
-    # of models actually averaged.
+def _apply_transform(df: pd.DataFrame, k_by_column: dict, pathogen: str) -> pd.DataFrame:
+    # Each column gets its own k (consensus_score -> k_star; excluded_{model} ->
+    # that exclusion's k_star_loo), so the IQR-restoring strength matches the
+    # exact set of models actually averaged into that column. 12b always
+    # provides a usable k (falling back to the peak-achievable value rather
+    # than NaN); a column missing from k_by_column entirely (stale/partial
+    # 12b_k_star.json) is left untransformed instead of failing the pathogen.
     out = df.copy()
     for c in df.columns:
         if c == "smiles":
             continue
-        k = k_consensus if c == "consensus_score" else k_excluded
-        out[c] = _tanh_transform(df[c].values, k).round(4)
+        k = k_by_column.get(c)
+        if k is None:
+            print(f"  [WARN] {pathogen}: no k_star for column '{c}' — left untransformed")
+            out[c] = df[c].values.round(4)
+        else:
+            out[c] = _tanh_transform(df[c].values, k).round(4)
     return out
 
 
@@ -189,25 +191,42 @@ def run(pathogen: str, in_dir: str, reports_df: pd.DataFrame, out_path: str) -> 
     uw_df.to_csv(unweighted_path, index=False)
     print(f"  [{pathogen}] unweighted -> {unweighted_path}")
 
-    # --- tanh IQR-restoring transformation (k depends only on number of models) ---
-    k_consensus   = _k_from_n_models(len(model_cols))
-    k_excluded    = _k_from_n_models(len(model_cols) - 1)
+    # --- tanh IQR-restoring transformation (per-pathogen k_star / k_star_loo, no meta-curve) ---
+    entry = _K_STAR_BY_PATHOGEN.get(pathogen)
+    if entry is None:
+        print(f"  [SKIP transform] {pathogen}: no entry in 12b_k_star.json "
+              "(run scripts/12b_fit_transformation.py first) — untransformed outputs only")
+        return
+
+    k_by_column = {"consensus_score": entry["k_star"]}
+    for model in model_cols:
+        k_by_column[f"excluded_{model}"] = entry["k_star_loo"].get(model)
+
+    approx = [] if entry.get("k_star_exact", True) else ["consensus_score"]
+    approx += [f"excluded_{m}" for m in model_cols if not entry.get("k_star_loo_exact", {}).get(m, True)]
+    if approx:
+        print(f"  [{pathogen}] using peak-achievable (non-exact) k for: {approx}")
+
     avg_model_iqr = float(np.mean([df[m].quantile(0.75) - df[m].quantile(0.25) for m in model_cols]))
+    loo_ks        = [k_by_column[f"excluded_{m}"] for m in model_cols if k_by_column[f"excluded_{m}"] is not None]
+    loo_range     = f"{min(loo_ks):.3f}-{max(loo_ks):.3f}" if loo_ks else "n/a"
 
     w_cons_iqr = float(out["consensus_score"].quantile(0.75) - out["consensus_score"].quantile(0.25))
-    out_t      = _apply_transform(out, k_consensus, k_excluded)
+    out_t      = _apply_transform(out, k_by_column, pathogen)
     t_path     = out_path.replace(".csv", "_transformed.csv")
     out_t.to_csv(t_path, index=False)
     w_iqr      = float(out_t["consensus_score"].quantile(0.75) - out_t["consensus_score"].quantile(0.25))
-    print(f"  [{pathogen}] weighted transform:   k={k_consensus:.3f} (k_excluded={k_excluded:.3f})  "
+    print(f"  [{pathogen}] weighted transform:   k_star={entry['k_star']:.3f} "
+          f"(k_star_loo range={loo_range})  "
           f"target_IQR={avg_model_iqr:.4f}  consensus_IQR={w_cons_iqr:.4f}  achieved_IQR={w_iqr:.4f}  -> {t_path}")
 
     uw_cons_iqr = float(uw_df["consensus_score"].quantile(0.75) - uw_df["consensus_score"].quantile(0.25))
-    uw_t        = _apply_transform(uw_df, k_consensus, k_excluded)
+    uw_t        = _apply_transform(uw_df, k_by_column, pathogen)
     ut_path     = unweighted_path.replace(".csv", "_transformed.csv")
     uw_t.to_csv(ut_path, index=False)
     uw_iqr      = float(uw_t["consensus_score"].quantile(0.75) - uw_t["consensus_score"].quantile(0.25))
-    print(f"  [{pathogen}] unweighted transform: k={k_consensus:.3f} (k_excluded={k_excluded:.3f})  "
+    print(f"  [{pathogen}] unweighted transform: k_star={entry['k_star']:.3f} "
+          f"(k_star_loo range={loo_range})  "
           f"target_IQR={avg_model_iqr:.4f}  consensus_IQR={uw_cons_iqr:.4f}  achieved_IQR={uw_iqr:.4f}  -> {ut_path}")
 
 
