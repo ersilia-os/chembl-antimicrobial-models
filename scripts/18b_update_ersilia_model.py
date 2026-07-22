@@ -252,13 +252,6 @@ def consensus_threshold(cutoffs, w_quality, k_star):
 _CATEGORY = {"DR": "dose-response", "SP": "single-point"}
 
 
-def _display_activity_type(activity_type: str) -> str:
-    """Prose display form for a raw ChEMBL activity_type. Genuine acronyms (MIC, IC50,
-    EC50, ...) are left as-is; "INHIBITION" reads as an ordinary word in a sentence, so
-    it's shown title-cased instead of ChEMBL's all-caps constant."""
-    return "Inhibition" if activity_type == "INHIBITION" else activity_type
-
-
 def build_description(meta_row, dataset_name, dcr):
     """Human-readable sub-model description for run_columns.csv.
 
@@ -290,18 +283,6 @@ def build_description(meta_row, dataset_name, dcr):
     else:
         assays_str = f" of {n_assays} assay{'s' if n_assays != 1 else ''}" if n_assays else ""
 
-    # ChEMBL only: name the single most-occurring activity type (e.g. MIC, IC50) as
-    # "predominantly X" — a pool typically mixes several types, so phrasing this as
-    # the sole activity type would be misleading. activity_types is already
-    # frequency-ordered by 01_download_datasets_chembl.py (from
-    # 22_binarisation_summary.csv), so the first entry is that pool's most common.
-    activity_type_str = ""
-    if source == "chembl":
-        activity_types = meta_row.get("activity_types")
-        types = [] if pd.isna(activity_types) else str(activity_types).split("|")
-        if types:
-            activity_type_str = f"; predominantly {_display_activity_type(types[0])}"
-
     if source == "pubchem":
         if bool(meta_row.get("is_merged", False)) and not pd.isna(meta_row.get("n_members", np.nan)):
             body = (f"PubChem whole-cell organism screen merged from "
@@ -309,13 +290,80 @@ def build_description(meta_row, dataset_name, dcr):
         else:
             body = f"PubChem whole-cell organism assay AID {dataset_name} ({n_compounds} compounds{added_str})"
     elif assay_type == "pool":
-        body = f"ChEMBL {category} signal-based pool{assays_str} ({n_compounds} compounds{added_str}{activity_type_str})"
+        body = f"ChEMBL {category} signal-based pool{assays_str} ({n_compounds} compounds{added_str})"
     elif assay_type == "catchall":
-        body = f"ChEMBL {category} low-data catch-all pool{assays_str} ({n_compounds} compounds{added_str}{activity_type_str})"
+        body = f"ChEMBL {category} low-data catch-all pool{assays_str} ({n_compounds} compounds{added_str})"
     else:
         body = f"dataset {dataset_name} ({n_compounds} compounds{added_str})"
 
     return f"Probability from sub-model trained on {body}. {threshold_str}"
+
+
+# ---------------------------------------------------------------------------
+# Public-facing sub-model names
+# ---------------------------------------------------------------------------
+
+_TYPE_BUCKET = {"DR": "dose_response", "SP": "single_point"}
+
+
+def assign_public_names(df, path_meta):
+    """Public-facing sub-model identifiers for run_columns.csv / reports.csv, replacing
+    the internal training-pipeline model_name (e.g. "DR_0001", "SP_catchall").
+
+    Scheme (all lowercase, in `df`'s existing sorted order from filter_and_sort):
+      - PubChem, single AID (not merged): pubchem_aid{aid}.
+      - PubChem, merged (multiple AIDs):  pubchem_{counter}.
+      - ChEMBL pool reducing to one member assay: chembl_{dose_response|single_point}_chembl{id}.
+      - ChEMBL, everything else (pools and catch-alls alike -- assay_type doesn't split
+        the bucket, only label does): chembl_{dose_response|single_point}_{counter}.
+    Counters are zero-padded to fit each bucket's actual size this run and are NOT
+    persisted across refreshes -- retraining can shift compound counts, which can
+    reorder the sort and therefore renumber a sub-model; that's expected, not a bug,
+    since only a mapping within this one run is needed, not stability across time.
+
+    Returns {model_name: public_name}.
+    """
+    # Pass 1: classify every row, tallying counter-bucket sizes.
+    plan = []  # (model_name, bucket_or_None, fixed_name_or_None)
+    bucket_size = {}
+    for _, r in df.iterrows():
+        meta_row = path_meta.loc[r["name"]]
+        if meta_row.get("source", "") == "pubchem":
+            if bool(meta_row.get("is_merged", False)):
+                bucket_size["pubchem"] = bucket_size.get("pubchem", 0) + 1
+                plan.append((r["model_name"], "pubchem", None))
+            else:
+                plan.append((r["model_name"], None, f"pubchem_aid{r['name']}".lower()))
+            continue
+
+        type_bucket = _TYPE_BUCKET.get(meta_row.get("label", ""), "single_point")
+        n_assays    = meta_row.get("n_assays")
+        member_ids  = meta_row.get("member_assay_ids")
+        member_ids  = [] if pd.isna(member_ids) else str(member_ids).split("|")
+        if meta_row.get("assay_type", "") == "pool" and n_assays == 1 and len(member_ids) == 1:
+            plan.append((r["model_name"], None, f"chembl_{type_bucket}_{member_ids[0]}".lower()))
+        else:
+            bucket = f"chembl_{type_bucket}"
+            bucket_size[bucket] = bucket_size.get(bucket, 0) + 1
+            plan.append((r["model_name"], bucket, None))
+
+    widths = {b: max(1, len(str(n - 1))) for b, n in bucket_size.items()}
+
+    # Pass 2: assign counters in the same order.
+    counters = {b: 0 for b in bucket_size}
+    public_name_map = {}
+    for model_name, bucket, fixed_name in plan:
+        if fixed_name is not None:
+            public_name_map[model_name] = fixed_name
+        else:
+            idx = counters[bucket]
+            counters[bucket] += 1
+            public_name_map[model_name] = f"{bucket}_{idx:0{widths[bucket]}d}"
+
+    if len(set(public_name_map.values())) != len(public_name_map):
+        sys.exit(f"FAIL: duplicate public names assigned: {public_name_map}")
+
+    return public_name_map
 
 
 # ---------------------------------------------------------------------------
@@ -465,7 +513,7 @@ def _run_in_runtime_env(cmd, cwd):
     return subprocess.run(["bash", "-c", full], cwd=cwd, capture_output=True, text=True)
 
 
-def generate_run_output(repo_dir, pathogen, sub_models, reports_csv_path,
+def generate_run_output(repo_dir, pathogen, sub_models, public_name_map, reports_csv_path,
                        run_columns_csv_path, consensus_py_path, dest_csv, keep_staging):
     """Build a staging dir, run bash run.sh, copy run_output.csv to dest_csv."""
     os.makedirs(TMP_DIR, exist_ok=True)
@@ -494,9 +542,9 @@ def generate_run_output(repo_dir, pathogen, sub_models, reports_csv_path,
             src = os.path.join(MODELS_DIR, pathogen, sub)
             if not os.path.isdir(src):
                 sys.exit(f"FAIL: missing checkpoints for sub-model '{sub}' at {src}.")
-            # Destination dir name must match the (lowercased) name main.py reads from
-            # run_columns.csv, even though the source dir keeps its original casing.
-            shutil.copytree(src, os.path.join(ckpt, "models", sub.lower()))
+            # Destination dir name must match the public name main.py reads from
+            # run_columns.csv, even though the source dir keeps its original name.
+            shutil.copytree(src, os.path.join(ckpt, "models", public_name_map[sub]))
         shutil.copy2(reports_csv_path, os.path.join(ckpt, "reports.csv"))
 
         shutil.copy2(run_columns_csv_path, os.path.join(framework_dst, "columns", "run_columns.csv"))
@@ -536,14 +584,19 @@ def write_diff_summary(path, pathogen, eosXXXX, new_df, old_reports_csv,
     lines.append(f"Source clone: {repo_dir}")
     lines.append("")
 
-    new_set = set(new_df["model_name"])
+    # Compared by original_name (the stable training-pipeline identifier), not the
+    # public model_name -- the public name's counter can shift between refreshes
+    # (e.g. compound counts reordering the sort) even when the same dataset survives,
+    # so keying by model_name here would misreport pure renumbering as churn.
+    new_set = set(new_df["model_name"])  # new_df is `df`, pre-remap: model_name IS the original name here
     if os.path.exists(old_reports_csv):
         old_df  = pd.read_csv(old_reports_csv)
-        old_set = set(old_df["model_name"])
+        old_key_col = "original_name" if "original_name" in old_df.columns else "model_name"
+        old_set = set(old_df[old_key_col])
         added    = sorted(new_set - old_set)
         removed  = sorted(old_set - new_set)
         common   = sorted(new_set & old_set)
-        old_indexed = old_df.set_index("model_name")
+        old_indexed = old_df.set_index(old_key_col)
     else:
         lines.append("(no existing reports.csv in repo-dir — treating all sub-models as new)")
         added, removed, common = sorted(new_set), [], []
@@ -559,7 +612,7 @@ def write_diff_summary(path, pathogen, eosXXXX, new_df, old_reports_csv,
     new_indexed = new_df.set_index("model_name")
     if old_indexed is not None and common:
         lines.append("Per sub-model decision_cutoff_rank drift:")
-        lines.append(f"  {'model_name':40s}  {'cutoff_old':>10s} -> {'cutoff_new':>10s}")
+        lines.append(f"  {'original_name':40s}  {'cutoff_old':>10s} -> {'cutoff_new':>10s}")
         for m in common:
             co = float(old_indexed.loc[m, "decision_cutoff_rank"])
             cn = float(new_indexed.loc[m, "decision_cutoff_rank"])
@@ -683,6 +736,10 @@ def main():
     sub_models = df["model_name"].tolist()
     print(f"      {len(sub_models)} sub-models kept: {sub_models}")
 
+    path_meta = meta_df[meta_df["pathogen"] == pathogen].set_index("name")
+    public_name_map = assign_public_names(df, path_meta)
+    print(f"      public names: {[public_name_map[m] for m in sub_models]}")
+
     # A single surviving sub-model has nothing to build a consensus from — mirrors
     # consensus.py's own compute_consensus() shortcut (len(model_names) == 1). These
     # pathogens correctly have no k_star fit by scripts/12b_fit_transformation.py.
@@ -701,18 +758,21 @@ def main():
 
     cols_to_drop = [c for c in _DROP_COLS if c in df.columns]
     reports_out = os.path.join(out_dir, "reports.csv")
-    # Ersilia requires lowercase column names in the model's output; run_columns.csv's
-    # "name" values become those column headers. reports.csv's model_name must match
-    # (main.py looks weights/cutoffs up in reports.csv by the same name it read from
-    # run_columns.csv). The on-disk checkpoint dirs under output/09_models/ keep their
-    # original (uppercase) casing from the training pipeline — only these published,
-    # Hub-facing names are lowercased.
+    # reports.csv's model_name must match run_columns.csv's "name" (main.py looks
+    # weights/cutoffs up in reports.csv by the same name it read from run_columns.csv),
+    # so model_name becomes the new public_name_map value here too. original_name keeps
+    # the training-pipeline identifier (also the on-disk checkpoint dir name under
+    # output/09_models/) for traceability and for 19_apply_and_fetch.py's checkpoint sync.
     df_out = df.drop(columns=cols_to_drop).copy()
-    df_out["model_name"] = df_out["model_name"].str.lower()
+    df_out["original_name"] = df_out["model_name"]
+    df_out["model_name"] = df_out["model_name"].map(public_name_map)
+    df_out = df_out[
+        ["model_name", "original_name"]
+        + [c for c in df_out.columns if c not in ("model_name", "original_name")]
+    ]
     df_out.to_csv(reports_out, index=False)
 
     print(f"[3/8] Build run_columns.csv (faithful threshold + per-assay descriptions)")
-    path_meta = meta_df[meta_df["pathogen"] == pathogen].set_index("name")
     rows = []
     if has_consensus:
         cutoffs   = [float(df.set_index("model_name").loc[m, "decision_cutoff_rank"]) for m in sub_models]
@@ -737,7 +797,7 @@ def main():
             sys.exit(f"FAIL: dataset '{dataset_name}' missing from 07_datasets_metadata.csv.")
         meta_row = path_meta.loc[dataset_name]
         rows.append({
-            "name":      model_row["model_name"].lower(),
+            "name":      public_name_map[model_row["model_name"]],
             "type":      "float",
             "direction": "high",
             "description": build_description(meta_row, dataset_name, model_row["decision_cutoff_rank"]),
@@ -816,6 +876,7 @@ def main():
         repo_dir=repo_dir,
         pathogen=pathogen,
         sub_models=sub_models,
+        public_name_map=public_name_map,
         reports_csv_path=reports_out,
         run_columns_csv_path=run_columns_out,
         consensus_py_path=consensus_out,

@@ -113,18 +113,12 @@ def main():
     # the kept set).
     import csv as _csv
     with open(os.path.join(pkg, "reports.csv")) as f:
-        kept = sorted({r["model_name"] for r in _csv.DictReader(f)})
+        pkg_rows = list(_csv.DictReader(f))
+    kept = sorted({r["model_name"] for r in pkg_rows})
+    orig_of = {r["model_name"]: r["original_name"] for r in pkg_rows}
     src_root = os.path.join(MODELS_DIR, pathogen)
     dst_root = os.path.join(repo_dir, "model", "checkpoints", "models")
     os.makedirs(dst_root, exist_ok=True)
-    # `kept` (read from reports.csv) is lowercase (Ersilia requires lowercase
-    # published names), but the training pipeline's on-disk checkpoint dirs under
-    # output/09_models/ keep their original casing (e.g. "DR_0001", "SP_catchall") —
-    # look those up case-insensitively rather than assuming a naive .upper() inverts it.
-    src_actual = {
-        d.lower(): d for d in os.listdir(src_root)
-        if os.path.isdir(os.path.join(src_root, d))
-    }
     # Drop any dst sub-dir not in `kept` (this covers both filtered-out
     # sub-models and ones removed by retraining).
     dropped = sorted(set(os.listdir(dst_root)) - set(kept))
@@ -134,11 +128,12 @@ def main():
         print(f"      dropped {len(dropped)}: {dropped}")
     # Mirror each kept sub-model from source. `rsync -a --delete` per-dir
     # gives byte-identical contents and prunes stale files within a sub-dir.
+    # orig_of[sub] is reports.csv's original_name -- the on-disk checkpoint dir
+    # name under output/09_models/, copied there verbatim by 18b.
     for sub in kept:
-        actual = src_actual.get(sub)
-        if actual is None:
-            sys.exit(f"FAIL: no source checkpoint dir for sub-model '{sub}' (case-insensitive) under {src_root}.")
-        src = os.path.join(src_root, actual) + "/"
+        src = os.path.join(src_root, orig_of[sub]) + "/"
+        if not os.path.isdir(src_root) or not os.path.isdir(src.rstrip("/")):
+            sys.exit(f"FAIL: no source checkpoint dir for sub-model '{sub}' at {src}.")
         dst = os.path.join(dst_root, sub) + "/"
         os.makedirs(dst, exist_ok=True)
         res = subprocess.run(["rsync", "-a", "--delete", src, dst])
