@@ -1,8 +1,10 @@
 """
-Step 19 — Apply the refresh package produced by step 18 to a local clone,
+Step 19 — Apply the refresh package produced by step 18b to a local clone,
 then run `ersilia fetch --from_dir` on it as a structural verification.
 
-Prereq: `python scripts/18_update_ersilia_model.py --pathogen <p> --repo-dir <r>`
+Prereq: `python scripts/18a_clone_hub_repos.py` has cloned the target eos-id's
+        repo (or it already exists at --repo-dir), and
+        `python scripts/18b_update_ersilia_model.py --pathogen <p> --repo-dir <r>`
         has been run for the same (pathogen, repo-dir), populating
         output/18_emh_files/{pathogen}/ with the full refresh package.
 
@@ -15,6 +17,8 @@ What this script does:
   4. `ersilia fetch {eosXXXX} --from_dir {repo-dir}`. Fails loud on non-zero
      exit. This validates metadata.yml schema, runs install.yml end-to-end,
      and executes run.sh once.
+Steps 3-4 (and the CONDA_SH requirement) are skipped with --no-fetch, which
+stops after syncing checkpoints and copying artifacts.
 
 The user (with Claude) then reviews `cd {repo-dir} && git diff`, commits,
 and pushes direct to main on ersilia-os/{eosXXXX}.
@@ -23,6 +27,11 @@ Usage:
     python scripts/19_apply_and_fetch.py \\
         --pathogen abaumannii \\
         --repo-dir /path/to/clone/eos21dr
+
+    python scripts/19_apply_and_fetch.py \\
+        --pathogen abaumannii \\
+        --repo-dir /path/to/clone/eos21dr \\
+        --no-fetch
 """
 
 import argparse
@@ -39,10 +48,7 @@ REPO_ROOT  = os.path.abspath(os.path.join(root, ".."))
 PKG_DIR    = os.path.join(REPO_ROOT, "output", "18_emh_files")
 MODELS_DIR = os.path.join(REPO_ROOT, "output", "09_models")
 
-CONDA_SH    = os.environ.get(
-    "CONDA_SH",
-    os.path.expanduser("~/programs/miniconda3/etc/profile.d/conda.sh"),
-)
+CONDA_SH    = os.environ.get("CONDA_SH")
 ERSILIA_ENV = "ersilia"
 
 # (src under output/18_emh_files/{pathogen}/, dest under {repo_dir}/)
@@ -67,14 +73,27 @@ def main():
     p.add_argument("--pathogen", required=True)
     p.add_argument("--repo-dir", required=True,
                    help="Path to the user's clone of ersilia-os/{eosXXXX}.")
+    p.add_argument("--no-fetch", action="store_true",
+                   help="Skip `ersilia delete`/`ersilia fetch` validation; "
+                        "only sync checkpoints and copy artifacts.")
     args = p.parse_args()
 
     pathogen = args.pathogen
     repo_dir = os.path.abspath(args.repo_dir)
+    total_steps = 2 if args.no_fetch else 4
 
     if pathogen not in ERSILIA_MODEL_IDS:
         sys.exit(f"Unknown pathogen '{pathogen}'. Known: {sorted(ERSILIA_MODEL_IDS)}")
     eosXXXX = ERSILIA_MODEL_IDS[pathogen]
+
+    if not args.no_fetch:
+        if not CONDA_SH:
+            sys.exit(
+                "FAIL: CONDA_SH environment variable is not set. Export it to your "
+                "machine's conda.sh, e.g. export CONDA_SH=~/miniconda3/etc/profile.d/conda.sh"
+            )
+        if not os.path.exists(CONDA_SH):
+            sys.exit(f"FAIL: CONDA_SH does not exist: {CONDA_SH}")
 
     if not os.path.isdir(repo_dir):
         sys.exit(f"--repo-dir does not exist: {repo_dir}")
@@ -82,11 +101,11 @@ def main():
     if not os.path.isdir(pkg):
         sys.exit(
             f"No refresh package at {pkg}.\n"
-            f"Run scripts/18_update_ersilia_model.py --pathogen {pathogen} "
+            f"Run scripts/18b_update_ersilia_model.py --pathogen {pathogen} "
             f"--repo-dir {repo_dir} first."
         )
 
-    print(f"[1/4] sync kept-only checkpoints -> {repo_dir}/model/checkpoints/models/")
+    print(f"[1/{total_steps}] sync kept-only checkpoints -> {repo_dir}/model/checkpoints/models/")
     # Only sync the sub-models that survived AUROC filtering (those in
     # reports.csv). Without this filter, checkpoints for filtered-out
     # sub-models would bloat the published repo even though main.py never
@@ -98,6 +117,14 @@ def main():
     src_root = os.path.join(MODELS_DIR, pathogen)
     dst_root = os.path.join(repo_dir, "model", "checkpoints", "models")
     os.makedirs(dst_root, exist_ok=True)
+    # `kept` (read from reports.csv) is lowercase (Ersilia requires lowercase
+    # published names), but the training pipeline's on-disk checkpoint dirs under
+    # output/09_models/ keep their original casing (e.g. "DR_0001", "SP_catchall") —
+    # look those up case-insensitively rather than assuming a naive .upper() inverts it.
+    src_actual = {
+        d.lower(): d for d in os.listdir(src_root)
+        if os.path.isdir(os.path.join(src_root, d))
+    }
     # Drop any dst sub-dir not in `kept` (this covers both filtered-out
     # sub-models and ones removed by retraining).
     dropped = sorted(set(os.listdir(dst_root)) - set(kept))
@@ -108,7 +135,10 @@ def main():
     # Mirror each kept sub-model from source. `rsync -a --delete` per-dir
     # gives byte-identical contents and prunes stale files within a sub-dir.
     for sub in kept:
-        src = os.path.join(src_root, sub) + "/"
+        actual = src_actual.get(sub)
+        if actual is None:
+            sys.exit(f"FAIL: no source checkpoint dir for sub-model '{sub}' (case-insensitive) under {src_root}.")
+        src = os.path.join(src_root, actual) + "/"
         dst = os.path.join(dst_root, sub) + "/"
         os.makedirs(dst, exist_ok=True)
         res = subprocess.run(["rsync", "-a", "--delete", src, dst])
@@ -116,7 +146,7 @@ def main():
             sys.exit(f"FAIL: rsync sub-model '{sub}' exit {res.returncode}.")
     print(f"      {len(kept)} sub-models synced")
 
-    print(f"[2/4] copy 6 artifacts from {pkg}/")
+    print(f"[2/{total_steps}] copy 6 artifacts from {pkg}/")
     for src_name, dst_rel in _FILE_COPIES:
         src = os.path.join(pkg, src_name)
         dst = os.path.join(repo_dir, dst_rel)
@@ -126,17 +156,22 @@ def main():
         shutil.copy2(src, dst)
         print(f"      {src_name} -> {dst_rel}")
 
-    print(f"[3/4] ersilia delete {eosXXXX}  (clear any cached install)")
-    _run_in_ersilia_env(f"ersilia delete {eosXXXX}")  # exit code intentionally ignored
+    if not args.no_fetch:
+        print(f"[3/{total_steps}] ersilia delete {eosXXXX}  (clear any cached install)")
+        _run_in_ersilia_env(f"ersilia delete {eosXXXX}")  # exit code intentionally ignored
 
-    print(f"[4/4] ersilia fetch {eosXXXX} --from_dir {repo_dir}")
-    res = _run_in_ersilia_env(f"ersilia fetch {eosXXXX} --from_dir {repo_dir}")
-    if res.returncode != 0:
-        sys.exit(f"FAIL: ersilia fetch exit {res.returncode}.")
+        print(f"[4/{total_steps}] ersilia fetch {eosXXXX} --from_dir {repo_dir}")
+        res = _run_in_ersilia_env(f"ersilia fetch {eosXXXX} --from_dir {repo_dir}")
+        if res.returncode != 0:
+            sys.exit(f"FAIL: ersilia fetch exit {res.returncode}.")
 
     print()
     print("=" * 60)
-    print(f"PASS: {eosXXXX} fetched from {repo_dir}.")
+    if args.no_fetch:
+        print(f"DONE: checkpoints synced and artifacts copied to {repo_dir}.")
+        print(f"ersilia fetch validation was skipped (--no-fetch).")
+    else:
+        print(f"PASS: {eosXXXX} fetched from {repo_dir}.")
     print(f"Next, review and ship:")
     print(f"  cd {repo_dir}")
     print(f"  git diff")
