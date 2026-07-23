@@ -252,6 +252,14 @@ def consensus_threshold(cutoffs, w_quality, k_star):
 _CATEGORY = {"DR": "dose-response", "SP": "single-point"}
 
 
+def _display_activity_type(activity_type: str) -> str:
+    """Prose display form for a raw ChEMBL activity_type. Genuine acronyms (MIC, IC50,
+    EC50, ...) are left as-is; "INHIBITION" reads as an ordinary word in a sentence, so
+    it's shown title-cased instead of ChEMBL's all-caps constant. Used for metadata.yml's
+    Description text (main()) -- run_columns.csv's own descriptions no longer need it."""
+    return "Inhibition" if activity_type == "INHIBITION" else activity_type
+
+
 def build_description(meta_row, dataset_name, dcr):
     """Human-readable sub-model description for run_columns.csv.
 
