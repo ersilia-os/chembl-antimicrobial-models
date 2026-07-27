@@ -213,7 +213,9 @@ Measures how well the consensus score (weighted and unweighted, from step 14) re
 
 ## 16b_consensus_results.py
 
-Per-pathogen 12-panel consensus dashboard combining DrugBank rank distributions per sub-model (with `decision_cutoff_rank` lines), AUROC histograms from step 15, weighted/unweighted consensus scores ±tanh-transformed (from step 14, split into leave-one-out and global), RMSE importance per model, and consensus-with-vs-without AUROC scatter and histograms (from step 16). Accepts `--pathogen <code>` (single) or iterates all pathogens in `config/pathogens.csv`. Output: `output/16_recapitulate_consensus/plots/16_consensus_{pathogen}.png`.
+Per-pathogen consensus dashboard: three full-width rows plus a split final row. [0] DrugBank `prob_rank` distribution per sub-model, with each model's `decision_cutoff_rank` as a dotted line. [1] Tanh-transformed weighted consensus, one column per leave-one-out exclusion plus the global consensus ("G."). [2] How well the leave-one-out consensus recapitulates each model. [3] AUROC of the step-15 off-diagonal model pairs, as a histogram and a reversed-cumulative curve. Accepts `--pathogen <code>` (single) or iterates all pathogens in `config/pathogens.csv`. Output: `output/16_recapitulate_consensus/plots/16_consensus_{pathogen}.png`.
+
+**Panel [2] plots three metric families on one 0–1 axis**, shape-coded: `o` AUROC at 0.1/1/5%, `^` top-N overlap divided by N, `s` spearman. Colour encodes depth, and the two families are directly comparable because the AUROC thresholds and overlap depths coincide (DrugBank n=11,347 → 0.1% = 12 compounds ≈ top 10, 1% = 114 ≈ top 100, 5% = 568 ≈ top 500). Overlap counts are shown as fractions so they share the AUROC scale. **Two null lines are drawn** because the families do not share one: 0.5 is chance for AUROC, whereas random top-N overlap is ~N/n (≈0.9% at top 100) and so sits at 0, which is also spearman's null. The gap between the circles and the triangles is the point of the panel — AUROC is the lenient reading of the same agreement that top-N overlap reports strictly.
 
 ---
 

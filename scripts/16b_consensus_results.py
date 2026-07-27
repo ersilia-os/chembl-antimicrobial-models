@@ -5,7 +5,8 @@ For each pathogen, renders a figure with three full-width rows plus a final
 row split into two columns:
   [0] DrugBank prob_rank scores per sub-model (+ decision_cutoff_rank line)
   [1] Consensus scores: weighted, tanh-transformed (per excluded-model + global)
-  [2] AUROC: consensus-without each model (weighted), one color per cutoff
+  [2] Consensus-without each model (weighted): AUROC (o), top-N overlap as a
+      fraction (^) and spearman (s) on one 0-1 axis, colour per depth
   [3] AUROC from per-model recapitulation (off-diagonal pairs): histogram
       (left column) and reversed-cumulative distribution (right column)
 
@@ -30,6 +31,7 @@ import sys
 
 import matplotlib.patches as mpatches
 import numpy as np
+from matplotlib.lines import Line2D
 import pandas as pd
 import stylia
 from stylia import ArticleColors, CategoricalPalette, save_figure
@@ -51,6 +53,14 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 AUROC_COLS   = ["auroc_0.1pct", "auroc_1pct", "auroc_5pct"]
 AUROC_LABELS = ["0.1%", "1%", "5%"]
+
+# Top-N overlap counts, and the denominators that put them on the same 0-1 scale as
+# AUROC/spearman. The depths line up with the AUROC thresholds almost exactly (DrugBank
+# n=11347: 0.1% = 12 compounds, 1% = 114, 5% = 568), so the two families share one colour
+# scale and can be read against each other at matching depth.
+HIT_COLS   = ["hit_overlap_10", "hit_overlap_100", "hit_overlap_500"]
+HIT_DENOM  = [10, 100, 500]
+HIT_LABELS = ["top 10", "top 100", "top 500"]
 
 
 def _plot_col(ax, values, pos, bw, color, rng):
@@ -92,9 +102,12 @@ def _consensus_panel(ax, df, model_cols, nc, rng, ylabel):
 
 
 def _hist_panel(ax, values, pal):
+    # Full 0-1 range: a 0.5 lower limit silently drops every pair the consensus
+    # ranks backwards, which is 12.5% of all pairs overall and 30% for calbicans -
+    # exactly the disagreements this panel exists to show.
     ax.set_xlabel("AUROC")
     ax.set_ylabel("Count")
-    ax.set_xlim([0.5, 1])
+    ax.set_xlim([0, 1])
     bins = np.arange(0, 1.1, 0.02)
     colors = pal.get(4)
     for col, label, color in zip(AUROC_COLS, AUROC_LABELS, colors):
@@ -109,7 +122,7 @@ def _cum_hist_panel(ax, values, pal):
     # bottom-right.
     ax.set_xlabel("AUROC")
     ax.set_ylabel("Cumulative prop.\n(AUROC ≥ x)")
-    ax.set_xlim([0.5, 1])
+    ax.set_xlim([0, 1])
     ax.set_ylim([0, 1.02])
     bins = np.arange(0, 1.1, 0.02)
     colors = pal.get(4)
@@ -123,27 +136,75 @@ def _cum_hist_panel(ax, values, pal):
 
 
 def _consensus_exc_panel(ax, model_cols, df_exc, cutoff_colors, rng):
+    """Per model: how well the leave-one-out consensus recapitulates it.
+
+    Three metric families on one 0-1 axis, shape-coded:
+      o  AUROC at 0.1 / 1 / 5%   — the model's own top t% as positives
+      ^  top-N overlap / N       — share of the model's top N the consensus also ranks top N
+      s  spearman                — whole-ranking agreement, depth-free
+
+    Colour encodes depth, so the circle and triangle at the same colour answer the same
+    question at the same cut: AUROC is the lenient reading, overlap the stringent one.
+    Two null lines are drawn because the families do not share one: 0.5 is chance for
+    AUROC, whereas random top-N overlap is ~N/n (≈0.9% at top-100) and so sits at 0,
+    which is also the null for spearman.
+    """
     N = len(model_cols)
-    ax.set_ylabel("AUROC")
-    ax.set_ylim([0.3, 1.05])
+    ax.set_ylabel("AUROC · overlap · ρ")
     ax.set_xlim([-0.7, N - 0.3])
     ax.axhline(0.5, lw=0.6, ls="--", color="k", alpha=0.4)
-    # Fixed x offset per cutoff, ordered low -> high cutoff (0.1% left, 5% right).
-    offs = np.linspace(-0.1, 0.1, len(AUROC_COLS))
+    ax.axhline(0.0, lw=0.6, ls=":",  color="k", alpha=0.4)
+
+    # Three groups of marks per model: AUROC left, spearman centre, overlap right.
+    # Within the AUROC and overlap groups the offsets run shallow -> deep, left to right.
+    auroc_offs = np.linspace(-0.28, -0.16, len(AUROC_COLS))
+    hit_offs   = np.linspace(0.16, 0.28, len(HIT_COLS))
+    lo = 0.0
+
     for i, model in enumerate(model_cols):
         row = df_exc[df_exc["model"] == model]
         if row.empty:
             continue
-        for col, color, off in zip(AUROC_COLS, cutoff_colors, offs):
+        for col, color, off in zip(AUROC_COLS, cutoff_colors, auroc_offs):
             vals = row[col].dropna().values
-            ax.scatter([i + off] * len(vals), vals, color=color,
+            ax.scatter([i + off] * len(vals), vals, color=color, marker="o",
                        s=20, alpha=0.85, lw=0, zorder=3)
+        for col, denom, color, off in zip(HIT_COLS, HIT_DENOM, cutoff_colors, hit_offs):
+            vals = row[col].dropna().values / denom
+            ax.scatter([i + off] * len(vals), vals, color=color, marker="^",
+                       s=20, alpha=0.85, lw=0, zorder=3)
+        sp = row["spearman"].dropna().values
+        ax.scatter([i] * len(sp), sp, color="k", marker="s",
+                   s=16, alpha=0.9, lw=0, zorder=4)
+        for arr in (row[AUROC_COLS].values, row[HIT_COLS].values / np.array(HIT_DENOM), sp):
+            if len(arr) and np.isfinite(arr).any():
+                lo = min(lo, float(np.nanmin(arr)))
+
+    ax.set_ylim([min(-0.05, lo - 0.05), 1.05])
     ax.set_xticks(range(N))
     ax.set_xticklabels(range(N), rotation=0, size=9)
     ax.set_xlabel(None)
-    ax.legend(handles=[mpatches.Patch(color=c, label=l)
-                       for c, l in zip(cutoff_colors, AUROC_LABELS)],
-              title="Threshold", fontsize=6, ncol=2, loc="lower right")
+
+    # Both legends go above the axes: with 50+ models every corner of the plot area
+    # holds data, so an in-axes legend always lands on top of points.
+    depth_legend = ax.legend(
+        handles=[mpatches.Patch(color=c, label=f"{a} / {h}")
+                 for c, a, h in zip(cutoff_colors, AUROC_LABELS, HIT_LABELS)],
+        title="Depth (AUROC / overlap)", fontsize=6, title_fontsize=6, ncol=3,
+        loc="lower right", bbox_to_anchor=(1.0, 1.0), frameon=False,
+        borderpad=0, columnspacing=1.0, handletextpad=0.5,
+    )
+    ax.add_artist(depth_legend)
+    ax.legend(
+        handles=[
+            Line2D([], [], ls="", marker="o", color="0.35", ms=4, label="AUROC"),
+            Line2D([], [], ls="", marker="^", color="0.35", ms=4, label="overlap / N"),
+            Line2D([], [], ls="", marker="s", color="k",    ms=4, label="spearman"),
+        ],
+        title="Metric", fontsize=6, title_fontsize=6, ncol=3,
+        loc="lower left", bbox_to_anchor=(0.0, 1.0), frameon=False,
+        borderpad=0, columnspacing=1.0, handletextpad=0.5,
+    )
 
 
 def plot_pathogen(pathogen, pathogen_name, reports, pal, rng):
