@@ -136,6 +136,25 @@ Datasets whose minority class is smaller than `N_FOLDS` (too few actives/inactiv
 
 ---
 
+## 09b_run_models_scaffold.py / 09b_run_models_scaffold.sh *(HPC only)*
+
+Companion to step 09: same 5-fold CV evaluation, same array indexing over `07_datasets/07_datasets_metadata.csv` (one task per dataset, same trainability skip rule), but folds are assigned by **scaffold** instead of at random, and **no final model is trained or saved** — that model already exists from step 09 and would be identical here. Purely a diagnostic report, not consumed by any downstream script (10a onward untouched).
+
+**Key decisions:**
+- **Scaffold:** standard (non-generic) Bemis-Murcko scaffold via RDKit `MurckoScaffoldSmiles` (`includeChirality=False`). Acyclic compounds all share the empty-string scaffold and are grouped together — the standard convention for this function.
+- **Fold assembly:** `sklearn.model_selection.StratifiedGroupKFold` (`N_FOLDS=5`, `RANDOM_SEED=42`) — scaffold groups are never split across a train/test boundary, with best-effort class balancing per fold.
+- **Degenerate folds:** a scaffold-constrained fold can end up with a single-class test set even when the dataset passes the min-class-size trainability check. When that happens, only that fold is skipped (no model fit, since AUROC/AUPRC/BEDROC would be undefined): its report row keeps compound/positive counts and `baseline_auroc=0.5`, all other metric columns are `NaN`, and it is omitted from `_folds.json`.
+
+Output: `output/09b_reports/{pathogen}/{name}.csv` + `_folds.json`, same column layout as `output/09_reports/` plus two extra columns, `scaffolds_train`/`scaffolds_test`, giving the number of distinct scaffold groups in each split (always defined, including for skipped folds). `output/09b_logs/` must exist before `sbatch` submission (not created automatically).
+
+---
+
+## 09c_plot_scaffold_vs_random.py
+
+Diagnostic scatter comparing the two CV strategies: for every dataset with a completed report in both `output/09_reports/` (random split) and `output/09b_reports/` (scaffold split), computes `delta_auroc = auroc_random_mean - auroc_scaffold_mean` per model and plots it against pathogen (x-jittered, one dot per model, dashed reference line at 0). A positive delta means the random split was optimistic relative to the scaffold-grouped one. Datasets missing a report on either side (e.g. still pending in 09b's array job) are excluded and counted per pathogen in the console output rather than guessed. Output: `output/09c_scaffold_vs_random/09c_delta_auroc.csv` + `09c_scaffold_vs_random.png`.
+
+---
+
 ## 10a_aggregate_reports.py
 
 Reads all per-dataset CV reports from `output/09_reports/` (keyed by dataset `name` — no positional recomputation) and collapses them into `output/10_reports/`. Applies a hard filter: datasets with mean CV AUROC < `MIN_AUROC` are excluded and recorded in `10_discarded_models.csv`. Retained datasets are written to `10_reports.csv`, one row per dataset.
