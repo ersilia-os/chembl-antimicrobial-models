@@ -6,7 +6,7 @@ per dataset. PubChem is restricted to organism-level assays
 (data/processed/pubchem/02_pubchem_datasets_organism.csv) and rows labelled
 'discarded' are excluded.
 
-Output: output/02b_plot_datasets/02b_datasets.png
+Output: output/02_datasets/02_datasets.png
 """
 
 import os
@@ -102,9 +102,9 @@ def main():
 
     pal = CategoricalPalette("npg")
     chembl_color  = pal.get(8)[0]
-    pubchem_color = "#1f77b4"  # blue
+    pubchem_color = pal.get(8)[7]  # distinct from type_colors (indices 0-3 below)
 
-    fig, axs = stylia.create_figure(1, 4, width=1.0, height=0.3)
+    fig, axs = stylia.create_figure(1, 4)
 
     ax_a = axs.next()
     y = counts["pathogen"].map(pathogen_to_y).to_numpy()
@@ -113,10 +113,9 @@ def main():
               color=pubchem_color, label="PubChem")
     ax_a.set_yticks(y)
     ax_a.set_yticklabels(counts["name"])
-    ax_a.set_xlabel("Number of datasets")
-    ax_a.set_ylabel("Pathogen")
     ax_a.legend(loc="lower right")
-    stylia.label(ax_a, title="Datasets per pathogen")
+    stylia.label(ax_a, xlabel="Number of datasets", ylabel="Pathogen",
+                 title="Datasets per pathogen")
 
     ax_b = axs.next()
     ax_b.sharey(ax_a)
@@ -126,11 +125,10 @@ def main():
     ax_b.scatter(pubchem_pts["ratio"], pubchem_pts["pathogen_y_jitter"],
                  color=pubchem_color, s=stylia.MARKERSIZE_SMALL, alpha=0.75,
                  label="PubChem")
-    ax_b.set_xlabel("Active ratio")
-    ax_b.set_ylabel("")
     ax_b.set_xlim([-0.05, 1.05])
     ax_b.tick_params(axis="y", left=False, labelleft=False)
-    stylia.label(ax_b, title="Active ratio per dataset")
+    stylia.label(ax_b, xlabel="Active ratio", ylabel="",
+                 title="Active ratio per dataset")
 
     ax_c = axs.next()
     ax_c.sharey(ax_a)
@@ -141,10 +139,9 @@ def main():
                  color=pubchem_color, s=stylia.MARKERSIZE_SMALL, alpha=0.75,
                  label="PubChem")
     ax_c.set_xscale("log")
-    ax_c.set_xlabel("Number of compounds")
-    ax_c.set_ylabel("")
     ax_c.tick_params(axis="y", left=False, labelleft=False)
-    stylia.label(ax_c, title="Compounds per dataset")
+    stylia.label(ax_c, xlabel="Number of compounds", ylabel="",
+                 title="Compounds per dataset")
 
     ax_d = axs.next()
     ax_d.sharey(ax_a)
@@ -162,11 +159,10 @@ def main():
         vals = type_counts[t].to_numpy()
         ax_d.barh(y, vals, left=left, color=type_colors[t], label=t)
         left = left + vals
-    ax_d.set_xlabel("Number of datasets")
-    ax_d.set_ylabel("")
     ax_d.tick_params(axis="y", left=False, labelleft=False)
     ax_d.legend(loc="lower right")
-    stylia.label(ax_d, title="Dataset types per pathogen")
+    stylia.label(ax_d, xlabel="Number of datasets", ylabel="",
+                 title="Dataset types per pathogen")
 
     save_figure(FIG_PATH)
     print(f"Saved figure: {FIG_PATH}")
