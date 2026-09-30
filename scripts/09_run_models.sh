@@ -1,8 +1,12 @@
 #!/bin/bash
 # Step 09 — Train LazyQSAR models on the HPC cluster.
 #
-# Submit via the command printed by script 08:
-#     sbatch --chdir=<repo_root> --array=0-<N>%20 scripts/09_run_models.sh
+# Runs in the camm environment (LazyQSAR 3.6.0); run script 08 first, which fetches both the
+# descriptor weights and the reference library.
+#
+# Submit with --array set to the row indices (0-based) of 07_datasets_metadata.csv to train;
+# script 08 prints a command covering every dataset:
+#     sbatch --chdir=<repo_root> --array=<indices> scripts/09_run_models.sh
 # All paths are relative to --chdir (the repository root).
 
 #SBATCH --job-name=camm-lq
@@ -24,5 +28,10 @@ export PYTHONDONTWRITEBYTECODE=1
 export PYTHONNOUSERSITE=1
 export PYTHONUNBUFFERED=1
 export HOME="$(pwd)/output/08_weights"
+
+# LazyQSAR >= 3.6 needs the reference library at fit time. Script 08 fetches it once into
+# $HOME/.lazyqsar/reference/, so tasks must never try to download it (they would all write
+# to the same cache at once, and compute nodes may have no network).
+export LAZYQSAR_REFERENCE_OFFLINE=1
 
 envs/camm/bin/python -u scripts/09_run_models.py "$SLURM_ARRAY_TASK_ID"
