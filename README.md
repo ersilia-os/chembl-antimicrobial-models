@@ -16,10 +16,11 @@ git clone https://github.com/ersilia-os/chembl-antimicrobial-models.git
 cd chembl-antimicrobial-models
 conda env create -f environment.yml --prefix ./envs/camm
 conda activate ./envs/camm
-pip install --ignore-installed "lazyqsar[all]==3.4.2"
+pip install --ignore-installed "lazyqsar[all]==3.6.0" \
+    torch==2.14.0+cpu --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
-> **Note:** Environment creation may take 5–10 minutes. The explicit `pip install` step after `conda env create` is required because conda's pip integration does not always resolve all transitive dependencies — running pip directly ensures LazyQSAR and all its dependencies are fully installed.
+> **Note:** Environment creation may take 20–40 minutes, most of it downloading PyTorch and the LazyQSAR descriptor stack. The explicit `pip install` step after `conda env create` is required because conda's pip integration does not always resolve all transitive dependencies — running pip directly ensures LazyQSAR and all its dependencies are fully installed. `torch` is repeated there because `--ignore-installed` would otherwise let pip pick the latest CUDA build from PyPI instead of the CPU build pinned in `environment.yml`; every pipeline step runs on CPU, and the CUDA wheel adds several GB of unused libraries.
 
 The `--prefix ./envs/camm` flag places the environment inside the repository directory. This is intentional: on HPC clusters, only the shared filesystem is visible to compute nodes, so the environment must live alongside the code rather than in the default local conda path. Two pipeline steps (05 and 09) are designed to run directly on the cluster to allow for parallelization — see the [Pipeline overview](#pipeline-overview) section below.
 
@@ -68,7 +69,7 @@ See [scripts/README.md](scripts/README.md) for a description of each step.
 | 07a | `scripts/07a_prepare_datasets.py` |
 | 07b | `scripts/07b_quality_checks.py` |
 | 07c | `scripts/07c_plot_datasets.py` |
-| 08  | `scripts/08_download_weights.py` *(HPC)* |
+| 08  | `scripts/08_download_weights_and_reference.py` *(HPC)* |
 | 09  | `scripts/09_run_models.sh` *(HPC)* / `scripts/09_fit_models_local.py` *(local)* |
 | 10a | `scripts/10a_aggregate_reports.py` |
 | 10b | `scripts/10b_training_results.py` |

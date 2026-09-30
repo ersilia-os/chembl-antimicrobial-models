@@ -120,9 +120,16 @@ Four-panel figure from the post-balancing metadata: datasets per pathogen (stack
 
 ---
 
-## 08_download_weights.py *(HPC only)*
+## 08_download_weights_and_reference.py *(HPC only)*
 
-Downloads the LazyQSAR descriptor model weights needed by step 09. Run once from the login node before submitting the SLURM array job. Re-running is safe — each file is skipped if already present. Weights are saved to `output/08_weights/` and include chemeleon, cddd (encoder + FPSim index), and CLAMP.
+Downloads everything step 09 needs from the network, in two halves, then prints the `sbatch` command to submit it. Run once from the login node. Re-running is safe — cached files are not fetched again, though the reference-library checks always re-run.
+
+1. **Descriptor weights** (~610 MB) — chemeleon, cddd (encoder + FPSim index + SMILES list) and CLAMP, saved to `output/08_weights/.lazyqsar/`. Downloaded by LazyQSAR itself, so the URLs live in one place rather than being copied here, and every file is verified against a published sha256 — including files already cached from an earlier run.
+2. **Reference library** (~260 MB) — the fixed 50,000-molecule drug-like library that LazyQSAR ≥ 3.6 ranks against, saved to `output/08_weights/.lazyqsar/reference/`. Fetching it here once means the step-09 array tasks can run with `LAZYQSAR_REFERENCE_OFFLINE=1` instead of all racing into the same cache. Verified on arrival: structural check, sha256 against the published manifest, and a descriptor-drift canary that recomputes 16 molecules with the local install. Any failure exits non-zero.
+
+The weights must come first: the drift canary in (2) recomputes descriptors using the checkpoints from (1).
+
+**Dataset size split:** the printed `sbatch` commands separate datasets at **30,000 compounds** — below that, 16 GB of memory and 20 concurrent tasks; above, 64 GB and 5. The threshold reflects observed memory use during featurization, not a property of the data.
 
 ---
 
