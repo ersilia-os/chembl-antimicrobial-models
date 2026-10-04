@@ -196,7 +196,7 @@ def main() -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     # Both halves are lazyqsar downloads, so the redirection has to come before either of
-    # them. Same redirection as 09_run_models.sh / 12a_predict_drugbank.py, so everything
+    # them. Same redirection as 09_run_models.sh / 12a_predict_reference.py / 12b_predict_drugbank.py, so everything
     # lands in the cache the fit jobs read. LAZYQSAR_HOME is set as well because it is the
     # variable lazyqsar actually consults; HOME alone only works through its ~/.lazyqsar
     # default.
