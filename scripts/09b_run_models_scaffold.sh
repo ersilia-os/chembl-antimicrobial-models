@@ -8,8 +8,10 @@
 #
 # output/09b_logs/ must exist before submission (sbatch does not create it):
 #     mkdir -p output/09b_logs
-# Submit with the same array range used for script 09:
-#     sbatch --chdir=<repo_root> --array=0-<N>%20 scripts/09b_run_models_scaffold.sh
+# Submit with the same array range used for script 09, in two size groups (the memory
+# default below, 16G, is only enough for the small datasets; override --mem for the large):
+#     sbatch --chdir=<repo_root> --job-name=camm-lq-scaffold-sm --array=<small>%5 scripts/09b_run_models_scaffold.sh
+#     sbatch --chdir=<repo_root> --job-name=camm-lq-scaffold-lg --array=<large>%5 --mem=96G scripts/09b_run_models_scaffold.sh
 # All paths are relative to --chdir (the repository root).
 
 #SBATCH --job-name=camm-lq-scaffold
@@ -31,5 +33,10 @@ export PYTHONDONTWRITEBYTECODE=1
 export PYTHONNOUSERSITE=1
 export PYTHONUNBUFFERED=1
 export HOME="$(pwd)/output/08_weights"
+
+# LazyQSAR >= 3.6 needs the reference library at fit time. Script 08 fetches it once into
+# $HOME/.lazyqsar/reference/, so tasks must never try to download it (they would all write
+# to the same cache at once, and compute nodes may have no network).
+export LAZYQSAR_REFERENCE_OFFLINE=1
 
 envs/camm/bin/python -u scripts/09b_run_models_scaffold.py "$SLURM_ARRAY_TASK_ID"
