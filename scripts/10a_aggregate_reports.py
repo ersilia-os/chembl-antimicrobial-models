@@ -2,10 +2,16 @@
 Step 10a — Aggregate per-dataset CV reports into a single summarised file.
 
 Iterates over datasets from 07_datasets/07_datasets_metadata.csv, validates that all
-N_FOLDS folds are present, and applies a mean AUROC ≥ MIN_AUROC filter. Writes to
-output/10_reports/:
-  - 10_reports.csv          — one row per retained dataset with aggregated metrics + weights
-  - 10_discarded_models.csv — datasets dropped for failing the AUROC threshold
+N_FOLDS folds are present, and applies a mean AUROC ≥ MIN_AUROC filter. A dataset that is
+trainable but has no report, a report whose folds are not exactly 0..N_FOLDS-1, or a NaN mean
+AUROC stops the script with an error: it means a training run failed or is unfinished, and it
+must not turn into a silent discard. Writes to output/10_reports/:
+  - 10_reports.csv          — one row per retained dataset with aggregated metrics + weights,
+                              plus the model's screening_auc and sensitivity_at_cutoff (LazyQSAR
+                              >= 3.6 out-of-fold diagnostics). screening_auc feeds the w_screen
+                              weight; sensitivity_at_cutoff is reported only.
+  - 10_discarded_models.csv — datasets dropped: mean AUROC below the threshold, or untrainable
+                              (a class with fewer than N_FOLDS members, so step 09 skipped it)
 
 Model files are keyed by the dataset `name` (unique per pathogen), so reports/models are
 found directly with no positional recomputation.
@@ -17,16 +23,24 @@ would grow it), ambiguous (accepted datasets already disagree amongst themselves
 (accepted label agrees with the discarded dataset's own label), conflict (accepted label
 disagrees). Invariant: lost + ambiguous + concordant + conflict == compounds.
 
-Quality weight = mean of six 0–1 components (all guarded against NaN/inf):
+Quality weight = mean of seven 0–1 components (the baselines are clamped away from 0 and 1,
+so a degenerate prevalence cannot give inf/NaN):
   w1 real negatives    — 1 − (added_negatives + added_decoys) / n_negatives
                           (penalises negatives borrowed from other assays / decoy fallback)
-  w2 mean CV AUROC     — 0 at ≤0.7, linear to 1 at 1.0
+  w2 mean CV AUROC     — 0 at ≤W_AUROC_FLOOR (0.7), linear to 1 at 1.0
   w3 AUPRC enrichment  — absolute excess + fold enrichment over prevalence
   w4 BEDROC enrichment — absolute excess + fold enrichment over random
+                          (the fold term is capped by the baseline: at prevalence 0.5 it cannot
+                          exceed 2x, so a dataset balanced with added negatives scores lower on
+                          w3 and w4, besides w1. Kept deliberately, see scripts/README.md.)
   w5 total compounds   — piecewise linear
   w6 total actives      — piecewise linear
+  w_screen screening AUC — 0 at ≤W_SCREEN_FLOOR (0.7), linear to 1 at 1.0 (LazyQSAR >= 3.6: probability that an
+                          out-of-fold active outranks a molecule of the fixed 50K drug-like
+                          reference library). A model without it is an error, not a blank.
 (The old flat dataset-type weight was removed and the rest renumbered.) A per-compound
-seventh weight w7 — the decision-cutoff ramp — is added only in the consensus (steps 12b/14).
+weight w7 — the decision-cutoff ramp — is added only in the consensus (step 14); it is
+unrelated to w_screen.
 final_normalized_weight rescales final_weight within each pathogen to sum to 100.
 
 Usage:
@@ -45,7 +59,16 @@ ROOT      = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(ROOT, ".."))
 sys.path.append(os.path.join(ROOT, "..", "src"))
 
-from default import COL_BIN, COL_INCHIKEY, DESCRIPTORS, MIN_AUROC, N_FOLDS  # noqa: E402
+from default import (  # noqa: E402
+    COL_BIN,
+    COL_INCHIKEY,
+    DESCRIPTORS,
+    MIN_AUROC,
+    N_FOLDS,
+    QUALITY_WEIGHT_COLS,
+    W_AUROC_FLOOR,
+    W_SCREEN_FLOOR,
+)
 
 METADATA_PATH  = os.path.join(REPO_ROOT, "output", "07_datasets", "07_datasets_metadata.csv")
 DATASETS_DIR   = os.path.join(REPO_ROOT, "output", "07_datasets")
@@ -122,8 +145,10 @@ def _piecewise_linear(x: float, knots: list[tuple[float, float]]) -> float:
     return knots[-1][1]
 
 
-# Six quality weights (w1..w6), each 0–1; final_weight = their mean. The old flat
-# dataset-type weight was removed and the rest renumbered (w1 = real-negative fraction, …).
+# Quality weights w1..w6 and w_screen (QUALITY_WEIGHT_COLS in src/default.py), each 0–1;
+# final_weight = their mean. The old flat dataset-type weight was removed and the rest
+# renumbered (w1 = real-negative fraction, …).
+
 def _w_real_neg(df: pd.DataFrame, n_added: int) -> float:
     """w1 — fraction of the negative class that is original data (not added from other
     assays or decoy fallback): 1 − n_added / n_negatives. 1.0 when nothing was added."""
@@ -133,12 +158,14 @@ def _w_real_neg(df: pd.DataFrame, n_added: int) -> float:
     return round(float(np.clip(1.0 - n_added / n_negatives, 0.0, 1.0)), 4)
 
 
+def _ramp(x: float, floor: float) -> float:
+    """0 at or below *floor*, linear to 1 at 1.0."""
+    return float(np.clip((x - floor) / (1.0 - floor), 0.0, 1.0))
+
+
 def _w_auroc(df: pd.DataFrame) -> float:
-    """w2 — mean CV AUROC: 0 at ≤0.7, linear to 1 at 1.0."""
-    auroc = df["auroc"].mean()
-    if auroc <= 0.7:
-        return 0.0
-    return round(min((auroc - 0.7) / 0.3, 1.0), 4)
+    """w2 — mean CV AUROC: 0 at ≤ W_AUROC_FLOOR, linear to 1 at 1.0."""
+    return round(_ramp(df["auroc"].mean(), W_AUROC_FLOOR), 4)
 
 
 def _enrichment_weight(value: float, baseline: float) -> float:
@@ -180,20 +207,47 @@ def _w_actives(df: pd.DataFrame) -> float:
     return round(_piecewise_linear(n, _W_ACTIVES_KNOTS), 4)
 
 
+def _w_screen(screening_auc: float) -> float:
+    """w_screen — screening AUC (out-of-fold actives vs the fixed reference library): 0 at
+    ≤ W_SCREEN_FLOOR, linear to 1 at 1.0. Same shape as w2."""
+    return round(_ramp(screening_auc, W_SCREEN_FLOOR), 4)
+
+
+def _load_model_meta(model_dir: str, pathogen: str, name: str) -> dict:
+    """The model's metadata.json, which every retained dataset must have.
+
+    A report is written when cross-validation ends, before the final fit, so a dataset can
+    have one without a model. w_screen is part of final_weight and the cutoff is read from
+    the model, so there is nothing to fall back to: stop instead of writing blanks.
+    """
+    meta_path = os.path.join(model_dir, "metadata.json")
+    if not os.path.exists(meta_path):
+        raise FileNotFoundError(
+            f"{pathogen}/{name}: no model at {meta_path} (the final fit has not finished?)"
+        )
+    with open(meta_path) as f:
+        meta = json.load(f)
+    screening_auc = (meta.get("oof_diagnostics") or {}).get("screening_auc")
+    if screening_auc is None or not np.isfinite(screening_auc):
+        raise ValueError(
+            f"{pathogen}/{name}: no screening_auc in {meta_path} (needs a LazyClassifierQSAR "
+            f"model fitted with LazyQSAR >= 3.6); cannot compute w_screen."
+        )
+    return meta
+
+
 def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow) -> dict:
     model_name = name  # model files are keyed by the dataset name
 
     model_dir = os.path.join(MODELS_DIR, pathogen, model_name)
-    meta_path = os.path.join(model_dir, "metadata.json")
-    if os.path.exists(meta_path):
-        with open(meta_path) as f:
-            model_meta = json.load(f)
-        decision_cutoff_rank = round(model_meta["decision_cutoff_rank"], 4)
-        portfolio = ";".join(sorted(p.upper() for p in model_meta.get("portfolio", [])))
-    else:
-        decision_cutoff_rank = np.nan
-        portfolio = np.nan
-    model_size_total_mb = _dir_size_mb(model_dir) if os.path.isdir(model_dir) else np.nan
+    model_meta = _load_model_meta(model_dir, pathogen, name)
+    decision_cutoff_rank = round(model_meta["decision_cutoff_rank"], 4)
+    portfolio = ";".join(sorted(p.upper() for p in model_meta.get("portfolio", [])))
+    # LazyQSAR >= 3.6 out-of-fold diagnostics against the fixed reference library
+    diag = model_meta["oof_diagnostics"]
+    screening_auc = round(float(diag["screening_auc"]), 4)
+    sensitivity_at_cutoff = round(float(diag.get("sensitivity_at_cutoff", np.nan)), 4)
+    model_size_total_mb = _dir_size_mb(model_dir)
 
     _an = getattr(mrow, "added_negatives", 0)
     _ad = getattr(mrow, "added_decoys", 0)
@@ -217,10 +271,13 @@ def aggregate(df: pd.DataFrame, pathogen: str, name: str, mrow) -> dict:
     row["w4"] = _w_bedroc(df)
     row["w5"] = _w_compounds(df)
     row["w6"] = _w_actives(df)
-    row["final_weight"] = round(float(np.mean([row[f"w{i}"] for i in range(1, 7)])), 4)
+    row["w_screen"] = _w_screen(screening_auc)
+    row["final_weight"] = round(float(np.mean([row[c] for c in QUALITY_WEIGHT_COLS])), 4)
 
-    row["decision_cutoff_rank"] = decision_cutoff_rank
-    row["portfolio"]            = portfolio
+    row["decision_cutoff_rank"]    = decision_cutoff_rank
+    row["screening_auc"]           = screening_auc
+    row["sensitivity_at_cutoff"]   = sensitivity_at_cutoff
+    row["portfolio"]               = portfolio
     row["model_size_total_mb"]  = model_size_total_mb
 
     for desc in DESCRIPTORS:
@@ -259,22 +316,28 @@ def main() -> None:
             # negative pool) from a genuinely missing/failed training run.
             n_pos = int(mrow.positives)
             n_neg = int(mrow.final_compounds) - n_pos
-            if min(n_pos, n_neg) < N_FOLDS:
-                reason = f"untrainable: min class {min(n_pos, n_neg)} < {N_FOLDS} folds"
-            else:
-                reason = "no report found (training missing/failed)"
+            if min(n_pos, n_neg) >= N_FOLDS:
+                raise FileNotFoundError(
+                    f"{pathogen}/{name}: no CV report at {report_path}, but the dataset is trainable "
+                    f"({n_pos} actives, {n_neg} inactives): its training run is missing or failed. "
+                    "Re-run step 09 for it before aggregating."
+                )
+            reason = f"untrainable: min class {min(n_pos, n_neg)} < {N_FOLDS} folds"
             print(f"{prefix} [WARN] {pathogen}/{name}: {reason}")
             discarded.append({"pathogen": pathogen, "name": name, "mean_auroc": np.nan, "reason": reason})
             continue
 
         df = pd.read_csv(report_path)
-        if len(df) < N_FOLDS:
-            reason = f"incomplete CV: {len(df)}/{N_FOLDS} folds"
-            print(f"{prefix} [WARN] {pathogen}/{name}: {reason}, skipping")
-            discarded.append({"pathogen": pathogen, "name": name, "mean_auroc": np.nan, "reason": reason})
-            continue
-
-        mean_auroc = round(df["auroc"].mean(), 4)
+        if sorted(df["fold"].tolist()) != list(range(N_FOLDS)):
+            raise ValueError(
+                f"{pathogen}/{name}: expected folds {list(range(N_FOLDS))} in {report_path}, "
+                f"found {sorted(df['fold'].tolist())}: the CV is incomplete or the file is corrupt."
+            )
+        raw_mean_auroc = df["auroc"].mean()
+        if not np.isfinite(raw_mean_auroc):
+            # NaN < MIN_AUROC is False, so without this check the dataset would be retained with NaN weights.
+            raise ValueError(f"{pathogen}/{name}: the mean CV AUROC is {raw_mean_auroc} in {report_path}.")
+        mean_auroc = round(raw_mean_auroc, 4)
         if mean_auroc < MIN_AUROC:
             reason = f"mean AUROC {mean_auroc:.3f} < {MIN_AUROC}"
             print(f"{prefix} [SKIP] {pathogen}/{name}: {reason}, discarding")
@@ -325,13 +388,6 @@ def main() -> None:
     out = out.drop(columns=["_type_rank", "_orig_compounds"])
     out.to_csv(OUT_PATH, index=False)
     print(f"{len(records)}/{n_total} datasets → {OUT_PATH}")
-
-    n_nan_cutoff = int(out["decision_cutoff_rank"].isna().sum())
-    print(f"decision_cutoff_rank NaN: {n_nan_cutoff}/{len(out)}")
-    if n_nan_cutoff:
-        missing = out.loc[out["decision_cutoff_rank"].isna(), ["pathogen", "name", "model_name"]]
-        for _, r in missing.iterrows():
-            print(f"  [no metadata.json] {r['pathogen']}/{r['model_name']} ({r['name']})")
 
 
 if __name__ == "__main__":

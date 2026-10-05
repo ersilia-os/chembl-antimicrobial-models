@@ -55,6 +55,17 @@ DESCRIPTORS = ["cddd", "chemeleon", "clamp", "morgan", "rdkit"]
 N_FOLDS = 5
 MIN_AUROC = 0.7  # minimum mean CV AUROC to retain a model in the pipeline
 
+# Model quality weights (script 10a): each ramps linearly from 0 at its floor to 1 at 1.0
+W_AUROC_FLOOR  = 0.7  # w2 — mean CV AUROC
+W_SCREEN_FLOOR = 0.7  # w_screen — screening AUC (LazyQSAR >= 3.6): P(an out-of-fold active
+                      # outranks a molecule of the fixed 50K drug-like reference library)
+
+# The model-level quality weights, as columns of 10_reports.csv. 10a writes them and takes their
+# mean as final_weight; 14 averages them (plus the per-compound cutoff ramp w7) into the consensus
+# weight; 18b ships them. The shipped consensus.py keeps its own literal copy (it runs outside this
+# repo); 18b is to assert that the two are equal.
+QUALITY_WEIGHT_COLS = ["w1", "w2", "w3", "w4", "w5", "w6", "w_screen"]
+
 # DrugBank filtering
 MW_CAP = 1000.0
 
