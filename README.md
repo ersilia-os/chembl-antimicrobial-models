@@ -81,7 +81,7 @@ See [scripts/README.md](scripts/README.md) for a description of each step.
 | 14  | `scripts/14_consensus_scoring.py` |
 | 14b | `scripts/14b_plot_consensus_calibration.py` |
 | 15  | `scripts/15_recapitulate_models.py` |
-| 16  | `scripts/16_recapitulate_consensus.py` |
+| 16a | `scripts/16a_recapitulate_consensus.py` |
 | 16b | `scripts/16b_consensus_results.py` |
 | 17  | `scripts/17_quality_checks.py` |
 | 18  | `scripts/18_update_ersilia_model.py` |
@@ -120,7 +120,7 @@ chembl-antimicrobial-models/
     ├── 14_consensus/               # One folder per pathogen: consensus on DrugBank and reference (raw + rank, weighted + unweighted) + anchors.json
     ├── 14b_consensus_calibration/  # Per-pathogen consensus before vs after calibration on the reference library (14b)
     ├── 15_recapitulate_models/     # Pairwise model agreement, per pathogen: drugbank.csv, reference.csv
-    ├── 16_recapitulate_consensus/  # Leave-one-out + full consensus recap + plots/ (16b)
+    ├── 16_recapitulate_consensus/  # Leave-one-out + full consensus recap, per pathogen and dataset + plots/ (16b)
     ├── 17_quality_checks/          # Per-pathogen QA + top-level summary.csv
     └── 18_emh_files/               # Ersilia Model Hub submission bundles
 ```

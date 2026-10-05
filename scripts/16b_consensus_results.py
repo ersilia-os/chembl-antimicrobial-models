@@ -1,24 +1,32 @@
 """
-Step 16b — Per-pathogen consensus-recapitulation figures.
+Step 16b — Per-pathogen consensus-recapitulation figures, on DrugBank and on the reference library.
 
-For each pathogen, renders a figure with three full-width rows plus a final
-row split into two columns:
-  [0] DrugBank prob_rank scores per sub-model (+ decision_cutoff_rank line)
-  [1] Consensus scores: weighted, tanh-transformed (per excluded-model + global)
-  [2] Consensus-without each model (weighted): AUROC (o), top-N overlap as a
-      fraction (^) and spearman (s) on one 0-1 axis, colour per depth
+For each pathogen and each dataset (drugbank, reference), renders a figure with three full-width
+rows plus a final row split into two columns:
+  [0] Rank scores per sub-model (+ decision_cutoff_rank line)
+  [1] Consensus rank (weighted; per excluded-model + global)
+  [2] Consensus-without each model (weighted): AUROC of the consensus recapitulating
+      the model's top 0.1 / 1 / 5%, colour per depth
   [3] AUROC from per-model recapitulation (off-diagonal pairs): histogram
       (left column) and reversed-cumulative distribution (right column)
 
-Inputs (per pathogen):
-  - output/12_drugbank/rank/{pathogen}.csv
-  - output/14_consensus/{pathogen}_transformed.csv
-  - output/15_recapitulate_models/{pathogen}.csv
-  - output/16_recapitulate_consensus/{pathogen}_weighted_transformed.csv (+ _exc_weighted_transformed)
+On the reference library panels [0] and [1] are a calibration check, not a measurement: every
+rank there is a position against that same library, so each distribution is fixed by construction
+(and 1% of the consensus sits at rank >= 0.65). Panels [2] and [3] are real agreement measurements.
+
+Inputs (per pathogen and dataset):
+  - output/12_{drugbank,reference}/rank/{pathogen}.csv
+  - output/14_consensus/{pathogen}/{dataset}_rank.csv
+  - output/15_recapitulate_models/{pathogen}/{dataset}.csv
+  - output/16_recapitulate_consensus/{pathogen}/{dataset}_exc_weighted.csv
   - output/10_reports/10_reports.csv  (for decision_cutoff_rank)
 
 Output:
-  - output/16_recapitulate_consensus/plots/16_consensus_{pathogen}.png
+  - output/16_recapitulate_consensus/plots/16_consensus_{pathogen}_{dataset}.png
+
+The script raises if the step-12 file, the step-14 columns, the step-15 and step-16a tables and
+10_reports.csv do not all list the same models, and exits with code 1 if a pathogen with two or
+more retained models has no step-14 output, so a stale or partial run cannot pass unnoticed.
 
 Usage:
     python scripts/16b_consensus_results.py                  # all pathogens
@@ -31,7 +39,6 @@ import sys
 
 import matplotlib.patches as mpatches
 import numpy as np
-from matplotlib.lines import Line2D
 import pandas as pd
 import stylia
 from stylia import ArticleColors, CategoricalPalette, save_figure
@@ -40,10 +47,14 @@ from stylia import ArticleColors, CategoricalPalette, save_figure
 root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(root, "..", "src"))
 
-from default import RANDOM_SEED
+from default import RANDOM_SEED, THRESHOLDS, THRESHOLD_SFXS
 
 REPORTS_PATH  = os.path.join(root, "..", "output", "10_reports", "10_reports.csv")
-DRUGBANK_DIR  = os.path.join(root, "..", "output", "12_drugbank", "rank")  # per-model rank (0-1) predictions
+# dataset -> (step-12 rank folder with the per-model predictions, name used in the figure title)
+DATASETS = {
+    "drugbank":  (os.path.join(root, "..", "output", "12_drugbank", "rank"),  "DrugBank compounds"),
+    "reference": (os.path.join(root, "..", "output", "12_reference", "rank"), "reference-library compounds"),
+}
 CONSENSUS_DIR = os.path.join(root, "..", "output", "14_consensus")
 RECAP_M_DIR   = os.path.join(root, "..", "output", "15_recapitulate_models")
 RECAP_C_DIR   = os.path.join(root, "..", "output", "16_recapitulate_consensus")
@@ -51,16 +62,9 @@ PATHOGENS     = os.path.join(root, "..", "config", "pathogens.csv")
 OUT_DIR       = os.path.join(root, "..", "output", "16_recapitulate_consensus", "plots")
 os.makedirs(OUT_DIR, exist_ok=True)
 
-AUROC_COLS   = ["auroc_0.1pct", "auroc_1pct", "auroc_5pct"]
-AUROC_LABELS = ["0.1%", "1%", "5%"]
-
-# Top-N overlap counts, and the denominators that put them on the same 0-1 scale as
-# AUROC/spearman. The depths line up with the AUROC thresholds almost exactly (DrugBank
-# n=11347: 0.1% = 12 compounds, 1% = 114, 5% = 568), so the two families share one colour
-# scale and can be read against each other at matching depth.
-HIT_COLS   = ["hit_overlap_10", "hit_overlap_100", "hit_overlap_500"]
-HIT_DENOM  = [10, 100, 500]
-HIT_LABELS = ["top 10", "top 100", "top 500"]
+# AUROC is read at three depths: the top 0.1% / 1% / 5% of the dataset.
+AUROC_COLS   = [f"auroc_{s}" for s in THRESHOLD_SFXS]
+AUROC_LABELS = [f"{t * 100:g}%" for t in THRESHOLDS]
 
 
 def _plot_col(ax, values, pos, bw, color, rng):
@@ -85,8 +89,9 @@ def _plot_col(ax, values, pos, bw, color, rng):
 
 
 def _consensus_panel(ax, df, model_cols, nc, rng, ylabel):
-    excl_cols = [c for c in df.columns if c.startswith("excluded_")]
-    all_cols  = excl_cols + ["consensus_score"]
+    # One leave-one-out column per model, in the model order of panel [0]
+    excl_cols = [f"consensus_rank_without_{m}" for m in model_cols]
+    all_cols  = excl_cols + ["consensus_rank"]
     xlabels   = list(range(len(excl_cols))) + ["G."]
     NC  = len(all_cols)
     w_c = min(0.35, max(0.15, 1.0 / NC))
@@ -94,7 +99,7 @@ def _consensus_panel(ax, df, model_cols, nc, rng, ylabel):
     ax.set_ylim([0, 1])
     ax.set_xlim([-0.7, NC - 0.3])
     for i, col in enumerate(all_cols):
-        color = nc.turquoise if col == "consensus_score" else nc.amber
+        color = nc.turquoise if col == "consensus_rank" else nc.amber
         _plot_col(ax, df[col].dropna().values, i, w_c, color, rng)
     ax.set_xticks(range(NC))
     ax.set_xticklabels(xlabels, rotation=0, size=9)
@@ -136,87 +141,78 @@ def _cum_hist_panel(ax, values, pal):
 
 
 def _consensus_exc_panel(ax, model_cols, df_exc, cutoff_colors, rng):
-    """Per model: how well the leave-one-out consensus recapitulates it.
+    """Per model: how well the leave-one-out consensus recapitulates it, as AUROC.
 
-    Three metric families on one 0-1 axis, shape-coded:
-      o  AUROC at 0.1 / 1 / 5%   — the model's own top t% as positives
-      ^  top-N overlap / N       — share of the model's top N the consensus also ranks top N
-      s  spearman                — whole-ranking agreement, depth-free
-
-    Colour encodes depth, so the circle and triangle at the same colour answer the same
-    question at the same cut: AUROC is the lenient reading, overlap the stringent one.
-    Two null lines are drawn because the families do not share one: 0.5 is chance for
-    AUROC, whereas random top-N overlap is ~N/n (≈0.9% at top-100) and so sits at 0,
-    which is also the null for spearman.
+    One circle per depth: the model's own top 0.1 / 1 / 5% as positives, the consensus built
+    without that model as the score. Colour encodes depth. The dashed line is chance (0.5).
     """
     N = len(model_cols)
-    ax.set_ylabel("AUROC · overlap · ρ")
+    ax.set_ylabel("AUROC")
     ax.set_xlim([-0.7, N - 0.3])
     ax.axhline(0.5, lw=0.6, ls="--", color="k", alpha=0.4)
-    ax.axhline(0.0, lw=0.6, ls=":",  color="k", alpha=0.4)
 
-    # Three groups of marks per model: AUROC left, spearman centre, overlap right.
-    # Within the AUROC and overlap groups the offsets run shallow -> deep, left to right.
-    auroc_offs = np.linspace(-0.28, -0.16, len(AUROC_COLS))
-    hit_offs   = np.linspace(0.16, 0.28, len(HIT_COLS))
-    lo = 0.0
+    # The three depths sit side by side around each model's tick, shallow -> deep, left to right.
+    offs = np.linspace(-0.12, 0.12, len(AUROC_COLS))
+    lo = 0.5
 
     for i, model in enumerate(model_cols):
         row = df_exc[df_exc["model"] == model]
         if row.empty:
             continue
-        for col, color, off in zip(AUROC_COLS, cutoff_colors, auroc_offs):
+        for col, color, off in zip(AUROC_COLS, cutoff_colors, offs):
             vals = row[col].dropna().values
             ax.scatter([i + off] * len(vals), vals, color=color, marker="o",
                        s=20, alpha=0.85, lw=0, zorder=3)
-        for col, denom, color, off in zip(HIT_COLS, HIT_DENOM, cutoff_colors, hit_offs):
-            vals = row[col].dropna().values / denom
-            ax.scatter([i + off] * len(vals), vals, color=color, marker="^",
-                       s=20, alpha=0.85, lw=0, zorder=3)
-        sp = row["spearman"].dropna().values
-        ax.scatter([i] * len(sp), sp, color="k", marker="s",
-                   s=16, alpha=0.9, lw=0, zorder=4)
-        for arr in (row[AUROC_COLS].values, row[HIT_COLS].values / np.array(HIT_DENOM), sp):
-            if len(arr) and np.isfinite(arr).any():
-                lo = min(lo, float(np.nanmin(arr)))
+            if len(vals):
+                lo = min(lo, float(np.nanmin(vals)))
 
-    ax.set_ylim([min(-0.05, lo - 0.05), 1.05])
+    ax.set_ylim([min(0.45, lo - 0.05), 1.05])
     ax.set_xticks(range(N))
     ax.set_xticklabels(range(N), rotation=0, size=9)
     ax.set_xlabel(None)
 
-    # Both legends go above the axes: with 50+ models every corner of the plot area
-    # holds data, so an in-axes legend always lands on top of points.
-    depth_legend = ax.legend(
-        handles=[mpatches.Patch(color=c, label=f"{a} / {h}")
-                 for c, a, h in zip(cutoff_colors, AUROC_LABELS, HIT_LABELS)],
-        title="Depth (AUROC / overlap)", fontsize=6, title_fontsize=6, ncol=3,
+    # The legend goes above the axes: with 50+ models every corner of the plot area holds data,
+    # so an in-axes legend always lands on top of points.
+    ax.legend(
+        handles=[mpatches.Patch(color=c, label=f"top {a}")
+                 for c, a in zip(cutoff_colors, AUROC_LABELS)],
+        title="Depth", fontsize=6, title_fontsize=6, ncol=3,
         loc="lower right", bbox_to_anchor=(1.0, 1.0), frameon=False,
         borderpad=0, columnspacing=1.0, handletextpad=0.5,
     )
-    ax.add_artist(depth_legend)
-    ax.legend(
-        handles=[
-            Line2D([], [], ls="", marker="o", color="0.35", ms=4, label="AUROC"),
-            Line2D([], [], ls="", marker="^", color="0.35", ms=4, label="overlap / N"),
-            Line2D([], [], ls="", marker="s", color="k",    ms=4, label="spearman"),
-        ],
-        title="Metric", fontsize=6, title_fontsize=6, ncol=3,
-        loc="lower left", bbox_to_anchor=(0.0, 1.0), frameon=False,
-        borderpad=0, columnspacing=1.0, handletextpad=0.5,
-    )
 
 
-def plot_pathogen(pathogen, pathogen_name, reports, pal, rng):
-    df12        = pd.read_csv(os.path.join(DRUGBANK_DIR,  f"{pathogen}.csv"))
-    df14_w_t    = pd.read_csv(os.path.join(CONSENSUS_DIR, f"{pathogen}_transformed.csv"))
-    df_recap_m  = pd.read_csv(os.path.join(RECAP_M_DIR,   f"{pathogen}.csv"))
-    df_rec_exc  = pd.read_csv(os.path.join(RECAP_C_DIR,   f"{pathogen}_exc_weighted_transformed.csv"))
+def _check_models(pathogen, dataset, model_cols, report_models, df14_w, df_recap_m, df_rec_exc):
+    """Raise unless every table behind the figure covers exactly the models of the step-12 file."""
+    prefix = "consensus_rank_without_"
+    expected = set(model_cols)
+    sources = {
+        "10_reports.csv": set(report_models),
+        "the step-14 leave-one-out columns": {c[len(prefix):] for c in df14_w.columns if c.startswith(prefix)},
+        "the step-15 table (scorer)": set(df_recap_m["model_scorer"].astype(str)),
+        "the step-15 table (binarized)": set(df_recap_m["model_binarized"].astype(str)),
+        "the step-16a table": set(df_rec_exc["model"].astype(str)),
+    }
+    for name, models in sources.items():
+        if models != expected:
+            raise ValueError(
+                f"[{pathogen}] {dataset}: {name} and the step-12 rank file list different models. "
+                f"Only in {name}: {sorted(models - expected)}; only in the step-12 file: "
+                f"{sorted(expected - models)}. Re-run the steps after the one that changed.")
+
+
+def plot_pathogen(pathogen, pathogen_name, dataset, reports, pal, rng):
+    in_dir_12, dataset_label = DATASETS[dataset]
+    df12        = pd.read_csv(os.path.join(in_dir_12,     f"{pathogen}.csv"))
+    df14_w      = pd.read_csv(os.path.join(CONSENSUS_DIR, pathogen, f"{dataset}_rank.csv"))
+    df_recap_m  = pd.read_csv(os.path.join(RECAP_M_DIR,   pathogen, f"{dataset}.csv"))
+    df_rec_exc  = pd.read_csv(os.path.join(RECAP_C_DIR,   pathogen, f"{dataset}_exc_weighted.csv"))
 
     model_cols = [c for c in df12.columns if c != "smiles"]
     report_p   = reports[reports["pathogen"] == pathogen].set_index("model_name")
     N          = len(model_cols)
     w_db       = min(0.35, max(0.15, 1.0 / N))
+    _check_models(pathogen, dataset, model_cols, list(report_p.index), df14_w, df_recap_m, df_rec_exc)
 
     stylia.set_format("slide")
     stylia.set_style("article")
@@ -230,7 +226,7 @@ def plot_pathogen(pathogen, pathogen_name, reports, pal, rng):
     # row keeps both columns so panel [3] can be duplicated side by side.
     fig, axs = stylia.create_figure(4, 2, width=0.7, height=0.7)
     fig.suptitle(
-        f"{pathogen_name} models ({N}) vs.\nDrugBank compounds ({len(df12)} compounds)",
+        f"{pathogen_name} models ({N}) vs.\n{dataset_label} ({len(df12)} compounds)",
         fontsize=9, y=0.99,
     )
     cells = [axs.next() for _ in range(8)]
@@ -247,7 +243,7 @@ def plot_pathogen(pathogen, pathogen_name, reports, pal, rng):
     # consensus ("G.") slot at N which only panel [1] fills.
     shared_xlim = [-0.7, N + 0.7]
 
-    # [0] DrugBank prob_rank scores per sub-model
+    # [0] Rank scores per sub-model
     ax = ax0
     ax.set_ylabel("Rank score")
     ax.set_ylim([0, 1])
@@ -262,8 +258,8 @@ def plot_pathogen(pathogen, pathogen_name, reports, pal, rng):
     ax.set_xticklabels(range(N), rotation=0, size=9)
     ax.set_xlabel(None)
 
-    # [1] Consensus scores: weighted, tanh-transformed
-    _consensus_panel(ax1, df14_w_t, model_cols, nc, rng, "Consensus score\ntransf.")
+    # [1] Consensus rank: weighted
+    _consensus_panel(ax1, df14_w, model_cols, nc, rng, "Consensus rank")
     ax1.set_xlim(shared_xlim)
 
     # [2] AUROC consensus-without each model (weighted), colored per cutoff
@@ -276,7 +272,7 @@ def plot_pathogen(pathogen, pathogen_name, reports, pal, rng):
     _hist_panel(ax3a, df_recap_off, pal)
     _cum_hist_panel(ax3b, df_recap_off, pal)
 
-    out_path = os.path.join(OUT_DIR, f"16_consensus_{pathogen}.png")
+    out_path = os.path.join(OUT_DIR, f"16_consensus_{pathogen}_{dataset}.png")
     save_figure(out_path)
     return out_path
 
@@ -291,8 +287,11 @@ def main():
     reports   = pd.read_csv(REPORTS_PATH)
     pathogens = pd.read_csv(PATHOGENS)
     code_to_name = dict(zip(pathogens["code"], pathogens["pathogen"]))
+    n_models = reports.groupby("pathogen").size()
 
     if args.pathogen is not None:
+        if args.pathogen not in n_models.index:
+            parser.error(f"unknown pathogen '{args.pathogen}'; 10_reports.csv has: {', '.join(sorted(n_models.index))}")
         codes = [args.pathogen]
     else:
         codes = pathogens["code"].tolist()
@@ -302,15 +301,24 @@ def main():
     pal = CategoricalPalette("ersilia")
     rng = np.random.default_rng(RANDOM_SEED)
 
+    missing = []
     for code in codes:
         name = code_to_name.get(code, code)
-        transformed_path = os.path.join(CONSENSUS_DIR, f"{code}_transformed.csv")
-        if not os.path.isfile(transformed_path):
-            print(f"  [SKIP] {code}: no consensus output (fewer than 2 retained models)")
+        if n_models.get(code, 0) < 2:
+            print(f"  [SKIP] {code}: {n_models.get(code, 0)} retained model(s), no consensus")
             continue
-        print(f"Plotting {name} ({code})")
-        out = plot_pathogen(code, name, reports, pal, rng)
-        print(f"  saved: {out}")
+        if not os.path.isdir(os.path.join(CONSENSUS_DIR, code)):
+            print(f"  [MISSING] {code}: no step-14 output in {CONSENSUS_DIR}")
+            missing.append(code)
+            continue
+        for dataset in DATASETS:
+            print(f"Plotting {name} ({code}) on {dataset}")
+            out = plot_pathogen(code, name, dataset, reports, pal, rng)
+            print(f"  saved: {out}")
+
+    if missing:
+        print("\nNo step-14 output for: " + ", ".join(missing) + "\n(run steps 14, 15 and 16a for them first)")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

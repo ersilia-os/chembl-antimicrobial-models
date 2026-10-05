@@ -270,17 +270,25 @@ Quantifies pairwise agreement between individual models for each pathogen, on Dr
 
 ---
 
-## 16_recapitulate_consensus.py
+## 16a_recapitulate_consensus.py
 
-Measures how well the consensus score (weighted and unweighted, from step 14) recapitulates each individual model. Runs in two modes — leave-one-out (model excluded from consensus) and full (model included) — producing four CSV files per pathogen in `output/16_recapitulate_consensus/`. Metrics match step 15: Spearman, Pearson, hit overlap, and threshold AUROC. Accepts `--pathogen <code>` for a single pathogen.
+Measures how well the consensus score (weighted and unweighted, from step 14) recapitulates each individual model, on DrugBank and on the reference library. Runs in two modes — leave-one-out (model excluded from the consensus) and full (model included) — producing four CSV files per dataset in `output/16_recapitulate_consensus/{pathogen}/` (`{dataset}_exc_weighted.csv`, `_exc_unweighted`, `_weighted`, `_unweighted`). Metrics and depths match step 15. Accepts `--pathogen <code>` for a single pathogen.
+
+By default it reads the consensus on the LazyQSAR rank scale (`consensus_rank`). `--raw` reads the raw consensus (`consensus_raw`) and adds a `_raw` suffix to the output files. The anchoring is monotone, so the two give identical Spearman, hit overlap and AUROC; only Pearson differs (checked on abaumannii: at most 0.02). The script exits with code 1 if a pathogen with two or more models has no step-14 folder (pathogens with one model are skipped), and raises if step 14 was not built from the step-12 files it reads: SMILES that differ row by row, different columns or models (also in `anchors.json`), a reference rank file whose SHA-256 is not the one recorded in `anchors.json`, or an unweighted consensus that is not the mean of the step-12 ranks. Accepts an unknown `--pathogen` as an error.
+
+**Ties at a cut:** the top-k sets hold exactly k molecules, so when several molecules tie at the k-th score (the consensus is written with 6 decimals) which of them are in the set is arbitrary. That can move a hit overlap by one molecule (seen on DrugBank at 1% and on the reference library at 5%, e.g. 445 vs 446 of 2,500), below the 4-decimal precision of the other metrics; AUROC counts every tied molecule as a positive and is not affected.
 
 ---
 
 ## 16b_consensus_results.py
 
-Per-pathogen consensus dashboard: three full-width rows plus a split final row. [0] DrugBank `prob_rank` distribution per sub-model, with each model's `decision_cutoff_rank` as a dotted line. [1] Tanh-transformed weighted consensus, one column per leave-one-out exclusion plus the global consensus ("G."). [2] How well the leave-one-out consensus recapitulates each model. [3] AUROC of the step-15 off-diagonal model pairs, as a histogram and a reversed-cumulative curve. Accepts `--pathogen <code>` (single) or iterates all pathogens in `config/pathogens.csv`. Output: `output/16_recapitulate_consensus/plots/16_consensus_{pathogen}.png`.
+Per-pathogen, per-dataset consensus dashboard (one figure for DrugBank, one for the reference library): three full-width rows plus a split final row. [0] `rank` distribution per sub-model, with each model's `decision_cutoff_rank` as a dotted line. [1] Weighted consensus rank, one column per leave-one-out exclusion plus the global consensus ("G."). [2] How well the leave-one-out consensus recapitulates each model. [3] AUROC of the step-15 off-diagonal model pairs, as a histogram and a reversed-cumulative curve. Accepts `--pathogen <code>` (single) or iterates all pathogens in `config/pathogens.csv`. Output: `output/16_recapitulate_consensus/plots/16_consensus_{pathogen}_{drugbank,reference}.png`.
 
-**Panel [2] plots three metric families on one 0–1 axis**, shape-coded: `o` AUROC at 0.1/1/5%, `^` top-N overlap divided by N, `s` spearman. Colour encodes depth, and the two families are directly comparable because the AUROC thresholds and overlap depths coincide (DrugBank n=11,347 → 0.1% = 12 compounds ≈ top 10, 1% = 114 ≈ top 100, 5% = 568 ≈ top 500). Overlap counts are shown as fractions so they share the AUROC scale. **Two null lines are drawn** because the families do not share one: 0.5 is chance for AUROC, whereas random top-N overlap is ~N/n (≈0.9% at top 100) and so sits at 0, which is also spearman's null. The gap between the circles and the triangles is the point of the panel — AUROC is the lenient reading of the same agreement that top-N overlap reports strictly.
+**On the reference library, panels [0] and [1] are a calibration check, not a measurement:** every rank there is a position against that same library, so each distribution is fixed by construction. Panels [2] and [3] are real agreement measurements.
+
+**Safeguards:** the script raises if the step-12 file, the step-14 leave-one-out columns, the step-15 and step-16a tables and `10_reports.csv` do not all list the same models, and exits with code 1 if a pathogen with two or more models has no step-14 output (pathogens with one model are skipped). An unknown `--pathogen` is an error.
+
+**Panel [2] shows only the AUROC:** for each model, one circle per depth (the model's own top 0.1 / 1 / 5% as positives, scored by the leave-one-out consensus). Colour encodes depth and the dashed line is chance (0.5). Spearman and hit overlap are in the step-16a tables but not in the figure.
 
 ---
 
