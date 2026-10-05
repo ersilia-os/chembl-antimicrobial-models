@@ -1,7 +1,7 @@
 #!/bin/bash
 # Step 09 — Train LazyQSAR models on the HPC cluster.
 #
-# Runs in the camm environment (LazyQSAR 3.6.0); run script 08 first, which fetches both the
+# Runs in the camm environment (LazyQSAR 3.6.1); run script 08 first, which fetches both the
 # descriptor weights and the reference library.
 #
 # Submit with --array set to the row indices (0-based) of 07_datasets_metadata.csv to train;
