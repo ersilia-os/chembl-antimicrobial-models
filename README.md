@@ -79,6 +79,7 @@ See [scripts/README.md](scripts/README.md) for a description of each step.
 | 12c | `scripts/12c_plot_organism_summary.py` |
 | 13  | `scripts/13_predict_drugbank_ersilia.sh` |
 | 14  | `scripts/14_consensus_scoring.py` |
+| 14b | `scripts/14b_plot_consensus_calibration.py` |
 | 15  | `scripts/15_recapitulate_models.py` |
 | 16  | `scripts/16_recapitulate_consensus.py` |
 | 16b | `scripts/16b_consensus_results.py` |
@@ -116,8 +117,9 @@ chembl-antimicrobial-models/
     ├── 12_drugbank/                # Per-pathogen DrugBank rank predictions (12b)
     ├── 12c_organism_summary/       # Per-pathogen score distributions: training folds vs DrugBank (12c)
     ├── 13_drugbank_ersilia/        # Single-model Ersilia Hub predictions on DrugBank
-    ├── 14_consensus/               # Per-pathogen consensus + unweighted/transformed variants
-    ├── 15_recapitulate_models/     # Pairwise model agreement
+    ├── 14_consensus/               # One folder per pathogen: consensus on DrugBank and reference (raw + rank, weighted + unweighted) + anchors.json
+    ├── 14b_consensus_calibration/  # Per-pathogen consensus before vs after calibration on the reference library (14b)
+    ├── 15_recapitulate_models/     # Pairwise model agreement, per pathogen: drugbank.csv, reference.csv
     ├── 16_recapitulate_consensus/  # Leave-one-out + full consensus recap + plots/ (16b)
     ├── 17_quality_checks/          # Per-pathogen QA + top-level summary.csv
     └── 18_emh_files/               # Ersilia Model Hub submission bundles
