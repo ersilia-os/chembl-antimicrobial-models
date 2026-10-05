@@ -23,7 +23,9 @@ stops after syncing checkpoints and copying artifacts.
 The user (with Claude) then reviews `cd {repo-dir} && git diff`, commits,
 and pushes direct to main on ersilia-os/{eosXXXX}.
 
-Usage:
+Usage (--repo-dir defaults to HUB_CLONES_DIR/{eosXXXX}, the folder 18a fills):
+    python scripts/19_apply_and_fetch.py --pathogen abaumannii
+
     python scripts/19_apply_and_fetch.py \\
         --pathogen abaumannii \\
         --repo-dir /path/to/clone/eos21dr
@@ -42,7 +44,7 @@ import sys
 
 root = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(root, "..", "src"))
-from default import ERSILIA_MODEL_IDS
+from default import ERSILIA_MODEL_IDS, HUB_CLONES_DIR
 
 REPO_ROOT  = os.path.abspath(os.path.join(root, ".."))
 PKG_DIR    = os.path.join(REPO_ROOT, "output", "18_emh_files")
@@ -71,20 +73,21 @@ def _run_in_ersilia_env(cmd):
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     p.add_argument("--pathogen", required=True)
-    p.add_argument("--repo-dir", required=True,
-                   help="Path to the user's clone of ersilia-os/{eosXXXX}.")
+    p.add_argument("--repo-dir", default=None,
+                   help="Path to the clone of ersilia-os/{eosXXXX} (default: HUB_CLONES_DIR/{eosXXXX}, "
+                        "where 18a puts it).")
     p.add_argument("--no-fetch", action="store_true",
                    help="Skip `ersilia delete`/`ersilia fetch` validation; "
                         "only sync checkpoints and copy artifacts.")
     args = p.parse_args()
 
     pathogen = args.pathogen
-    repo_dir = os.path.abspath(args.repo_dir)
     total_steps = 2 if args.no_fetch else 4
 
     if pathogen not in ERSILIA_MODEL_IDS:
         sys.exit(f"Unknown pathogen '{pathogen}'. Known: {sorted(ERSILIA_MODEL_IDS)}")
     eosXXXX = ERSILIA_MODEL_IDS[pathogen]
+    repo_dir = os.path.abspath(args.repo_dir) if args.repo_dir else os.path.join(HUB_CLONES_DIR, eosXXXX)
 
     if not args.no_fetch:
         if not CONDA_SH:

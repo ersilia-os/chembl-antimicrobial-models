@@ -1,3 +1,5 @@
+import os
+
 # Column names
 COL_SMILES = "smiles"
 COL_CANONICAL_SMILES = "canonical_smiles"
@@ -77,6 +79,12 @@ THRESHOLD_SFXS = ["0.1pct", "1pct", "5pct"]
 FOLD_UNSTABLE_AUROC_STD = 0.05   # flag models with cross-fold auroc_std above this
 LOW_WEIGHT_THRESHOLD    = 0.3    # flag models with final_weight below this
 
+# Ersilia Hub refresh (scripts 18a, 18b, 19)
+HUB_CLONES_DIR  = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "chembl-models-tmp"))
+                                                      # one clone per pathogen, {HUB_CLONES_DIR}/{eosXXXX}, next to this repo
+HUB_URL         = "https://github.com/ersilia-os/{eos_id}.git"   # the remote the existing clones already use
+HUB_BRANCH      = "main"                              # the branch a refresh is committed to and pushed to
+HUB_RUNTIME_ENV = "cam-models-runtime"                # conda env in which 18b runs the model once (lazyqsar must match the pin in 18b)
 
 ERSILIA_MODEL_IDS = {
     "abaumannii":"eos21dr",
