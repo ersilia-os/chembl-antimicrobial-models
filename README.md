@@ -16,7 +16,7 @@ git clone https://github.com/ersilia-os/chembl-antimicrobial-models.git
 cd chembl-antimicrobial-models
 conda env create -f environment.yml --prefix ./envs/camm
 conda activate ./envs/camm
-pip install --ignore-installed "lazyqsar[all]==3.6.0" \
+pip install --ignore-installed "lazyqsar[all]==3.6.1" \
     torch==2.14.0+cpu --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
