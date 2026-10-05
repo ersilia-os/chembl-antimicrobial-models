@@ -20,6 +20,8 @@ Safeguards, each of which stops the script:
   - the anchors of step 14 must have been built from exactly the kept models and the weights and
     cutoffs now in 10_reports.csv (weights fingerprint), otherwise "re-run step 14";
   - 10_reports.csv must hold no model below MIN_AUROC (10a keeps only retained models);
+  - the example input in the clone must parse (an unparseable SMILES gets no value and `ersilia fetch`
+    rejects the model) and the staged example output must have no empty value;
   - the model run in staging must use the pinned lazyqsar version;
   - consensus_score of the staged output must equal src/consensus.py on the printed sub-model ranks;
     and on a DrugBank sample (the 15 top of the step-14 consensus + 10 seeded random molecules) the
@@ -965,16 +967,47 @@ def build_metadata_yml(df, meta_df, pathogen, repo_dir, path):
         f.write(new_yaml)
 
 
-def check_example_output(run_output_path, run_columns_path):
-    """Column order = run_columns.csv, every value in [0, 1] (NaN allowed: a molecule that cannot be featurised)."""
+def read_example_smiles(repo_dir):
+    """The SMILES of the model's example input (model/framework/examples/run_input.csv in the clone)."""
+    path = os.path.join(repo_dir, "model", "framework", "examples", "run_input.csv")
+    if not os.path.exists(path):
+        sys.exit(f"FAIL: missing {path} in --repo-dir.")
+    return pd.read_csv(path).iloc[:, 0].astype(str).tolist()
+
+
+def check_example_input(example_smiles, repo_dir):
+    """Every example molecule must parse: an unparseable SMILES gets no value from the model (NaN in all
+    columns) and `ersilia fetch` rejects a model whose example output has an empty row ("All output
+    values are empty at row N"). The example input belongs to the Hub repo; fix it there."""
+    from rdkit import Chem
+    bad = [(i + 1, smi) for i, smi in enumerate(example_smiles) if Chem.MolFromSmiles(smi) is None]
+    if bad:
+        sys.exit(
+            "FAIL: the example input of the model has SMILES that RDKit cannot parse, so the model returns no value "
+            f"for them and `ersilia fetch` would reject it: {bad}. Replace them in "
+            f"{os.path.join(repo_dir, 'model', 'framework', 'examples', 'run_input.csv')} (the Hub repo), then re-run."
+        )
+
+
+def check_example_output(run_output_path, run_columns_path, example_smiles):
+    """Column order = run_columns.csv, no empty value, every value in [0, 1]. An empty row is what
+    `ersilia fetch` rejects; it is named by its example molecule."""
     rout = pd.read_csv(run_output_path)
     rcols = pd.read_csv(run_columns_path)["name"].tolist()
     if list(rout.columns) != rcols:
         sys.exit(f"FAIL: run_output column order {list(rout.columns)} != run_columns {rcols}")
-    vmin, vmax = float(np.nanmin(rout.values)), float(np.nanmax(rout.values))
+    empty_rows = [i for i in range(len(rout)) if rout.iloc[i].isna().all()]
+    if empty_rows:
+        sys.exit("FAIL: the staged model returns no value at all for example molecule(s) "
+                 f"{[(i + 1, example_smiles[i]) for i in empty_rows]}; `ersilia fetch` would reject it "
+                 "(\"All output values are empty\"). Fix the example input in the Hub repo.")
+    if rout.isna().any().any():
+        cells = [(int(i) + 1, rout.columns[j]) for i, j in zip(*np.where(rout.isna().to_numpy()))]
+        sys.exit(f"FAIL: empty values in the staged example output (example molecule number, column): {cells[:10]}")
+    vmin, vmax = float(rout.values.min()), float(rout.values.max())
     if not (0.0 <= vmin and vmax <= 1.0):
         sys.exit(f"FAIL: run_output values out of [0,1]: min={vmin} max={vmax}")
-    print(f"      {len(rout)} rows x {len(rout.columns)} columns, all in [0,1].")
+    print(f"      {len(rout)} rows x {len(rout.columns)} columns, no empty value, all in [0,1].")
     return rout
 
 
@@ -995,6 +1028,8 @@ def main():
     if not os.path.isdir(repo_dir):
         sys.exit(f"Repo dir does not exist: {repo_dir} (run scripts/18a_clone_hub_repos.py first).")
     conda_sh = find_conda_sh()
+    example_smiles = read_example_smiles(repo_dir)
+    check_example_input(example_smiles, repo_dir)
     out_dir = os.path.join(OUTPUT_DIR, pathogen)
     os.makedirs(out_dir, exist_ok=True)
 
@@ -1048,7 +1083,7 @@ def main():
         consensus_py_path=consensus_out, dest_csv=run_output_out, keep_staging=args.keep_staging,
         parity_smiles=parity["smiles"],
     )
-    rout = check_example_output(run_output_out, run_columns_out)
+    rout = check_example_output(run_output_out, run_columns_out, example_smiles)
     parity_lines, flags = check_run_output(rout, pout, parity, df, public_name_map, anchors)
     for line in parity_lines:
         print(f"      {line}")
