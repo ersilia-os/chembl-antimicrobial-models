@@ -1,29 +1,36 @@
 """
-Step 12c — Per-organism summary: score distributions of the training folds vs DrugBank.
+Step 12c — Per-organism summary: score distributions of the training folds vs DrugBank and the
+reference library.
 
 For each pathogen, renders a 2-panel figure (panels stacked, one slot per dataset along x):
-  (a) Predicted probabilities, three boxplots (+ jittered points) per dataset: out-of-fold
-      actives (red), out-of-fold inactives (blue) and the DrugBank compounds (yellow), with
-      the model's decision_cutoff_proba as a dotted line.
-  (b) The same three groups for the rank scores, with decision_cutoff_rank as a dotted line.
+  (a) Predicted probabilities, four boxplots (+ jittered points) per dataset: out-of-fold
+      actives (red), out-of-fold inactives (blue), the DrugBank compounds (yellow) and the
+      50,000 molecules of the LazyQSAR reference library (green), with the model's
+      decision_cutoff_proba as a dotted line over the last two.
+  (b) The same four groups for the rank scores, with decision_cutoff_rank as a dotted line.
 Above each group (y = 0.95) the text gives the % of its compounds at or above the cutoff
 (>=, the comparison lazyqsar's `binary` output uses). In (b) that is the rank 0.65 every model
-was cut at, for all three groups. In (a) only the DrugBank group has a cutoff line and a label:
-its probabilities come from the final model, so that model's decision_cutoff_proba is exact for
-them. The out-of-fold probabilities come from five fold models, and the same rank 0.65 sits at a
-different probability in each of them (they differ by a median of 0.05, up to 0.28), so no single
-probability cutoff applies to the out-of-fold groups and panel (a) shows none for them; their
-percentages are in panel (b).
+was cut at, for all four groups. In (a) only the DrugBank and reference groups have a cutoff
+line and a label: their probabilities come from the final model, so that model's
+decision_cutoff_proba is exact for them. The out-of-fold probabilities come from five fold
+models, and the same rank 0.65 sits at a different probability in each of them (they differ by a
+median of 0.05, up to 0.28), so no single probability cutoff applies to the out-of-fold groups
+and panel (a) shows none for them; their percentages are in panel (b).
+
+The reference library is the set every model's rank is a position against, so about 1% of it
+reaches rank 0.65 by design (0.98% to 1.21% per model, see the 12a entry in scripts/README.md):
+the green group is a calibration reference for the others, not an independent test.
 
 All five folds are used, so every compound of a dataset is scored out-of-fold exactly once. The
-DrugBank scores are those of the dataset's final model, trained on all data. The x order is the
-column order of the DrugBank rank file. The raw model score has no panel: 09 never saved
-out-of-fold scores (only probabilities and ranks).
+DrugBank and reference scores are those of the dataset's final model, trained on all data. The x
+order is the column order of the DrugBank rank file. The raw model score has no panel: 09 never
+saved out-of-fold scores (only probabilities and ranks).
 
 Inputs (per pathogen):
   - output/09_reports/{pathogen}/{name}_folds.json    (per-fold y_true / y_hat / y_rank)
   - output/09_models/{pathogen}/{name}/metadata.json  (decision_cutoff_proba / _rank)
   - output/12_drugbank/{rank,proba}/{pathogen}.csv    (DrugBank scores, one column per model)
+  - output/12_reference/{rank,proba}/{pathogen}.csv   (reference-library scores, same columns)
   - config/pathogens.csv                              (pathogen display names)
 
 Output:
@@ -52,14 +59,17 @@ from default import RANDOM_SEED  # noqa: E402
 REPORTS_DIR    = os.path.join(root, "..", "output", "09_reports")
 MODELS_DIR     = os.path.join(root, "..", "output", "09_models")
 DRUGBANK_DIR   = os.path.join(root, "..", "output", "12_drugbank")
+REFERENCE_DIR  = os.path.join(root, "..", "output", "12_reference")
 PATHOGENS_PATH = os.path.join(root, "..", "config", "pathogens.csv")
 OUT_DIR        = os.path.join(root, "..", "output", "12c_organism_summary")
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# Three groups per dataset slot (actives, inactives, DrugBank): x offsets of their boxes and
-# the half-width of a box / of the jitter around it, in x units (one dataset = 1 unit).
-OFFSETS = (-0.31, 0.0, 0.31)
-HALF_WIDTH = 0.11
+# Four groups per dataset slot (actives, inactives, DrugBank, reference): x offsets of their boxes
+# and the half-width of a box / of the jitter around it, in x units (one dataset = 1 unit). The
+# first N_OOF groups are out-of-fold; the rest are scored by the final model.
+OFFSETS = (-0.375, -0.125, 0.125, 0.375)
+HALF_WIDTH = 0.09
+N_OOF = 2
 
 # Height at which each group's "% of compounds at or above the cutoff" is written.
 LABEL_Y = 0.95
@@ -131,9 +141,10 @@ def plot_distributions(ax, names: list, groups: list, cutoffs: list, colors: tup
                        legend_labels: tuple = None, oof_cutoff: bool = True) -> None:
     """Three boxplots (+ jittered points) per dataset slot.
 
-    *groups[i]* holds the three score arrays of dataset i (actives, inactives, DrugBank), in the
-    order of *colors*; the dotted line marks that dataset's decision cutoff. With
-    *oof_cutoff* False only the last group, DrugBank, gets its line and its % label.
+    *groups[i]* holds the four score arrays of dataset i (actives, inactives, DrugBank,
+    reference), in the order of *colors*; the dotted line marks that dataset's decision cutoff.
+    With *oof_cutoff* False only the groups scored by the final model (DrugBank and reference,
+    the last ones) get their line and their % label.
     """
     last = len(OFFSETS) - 1
     for i, arrays in enumerate(groups):
@@ -143,11 +154,11 @@ def plot_distributions(ax, names: list, groups: list, cutoffs: list, colors: tup
             bp = ax.bxp([_box_stats(values)], positions=[i + offset],
                         widths=HALF_WIDTH * 2, patch_artist=True, showfliers=False)
             _style_boxes(bp)
-            if oof_cutoff or g == last:
+            if oof_cutoff or g >= N_OOF:
                 ax.text(i + offset, LABEL_Y, _pct_label(np.mean(values >= cutoffs[i])),
                         ha="center", va="center", fontsize=5,
                         bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=0.5))
-        first = 0 if oof_cutoff else last
+        first = 0 if oof_cutoff else N_OOF
         ax.plot([i + OFFSETS[first] - HALF_WIDTH, i + OFFSETS[last] + HALF_WIDTH],
                 [cutoffs[i], cutoffs[i]], lw=0.4, c="k", linestyle="dotted")
     ax.set_ylim([0, 1])
@@ -165,30 +176,40 @@ def plot_distributions(ax, names: list, groups: list, cutoffs: list, colors: tup
 def plot_pathogen(pathogen: str, pathogen_name: str, nc, rng) -> str:
     drugbank_rank = pd.read_csv(os.path.join(DRUGBANK_DIR, "rank", f"{pathogen}.csv"))
     drugbank_proba = pd.read_csv(os.path.join(DRUGBANK_DIR, "proba", f"{pathogen}.csv"))
+    reference_rank = pd.read_csv(os.path.join(REFERENCE_DIR, "rank", f"{pathogen}.csv"))
+    reference_proba = pd.read_csv(os.path.join(REFERENCE_DIR, "proba", f"{pathogen}.csv"))
     names = [c for c in drugbank_rank.columns if c != "smiles"]
     n = len(names)
+    for label, frame in (("DrugBank proba", drugbank_proba), ("reference rank", reference_rank),
+                         ("reference proba", reference_proba)):
+        if [c for c in frame.columns if c != "smiles"] != names:
+            raise ValueError(f"[{pathogen}] the {label} file does not have the same models, in the "
+                             "same order, as the DrugBank rank file.")
 
-    def groups(key: str, drugbank: pd.DataFrame) -> list:
+    def groups(key: str, drugbank: pd.DataFrame, reference: pd.DataFrame) -> list:
         out = []
         for name in names:
             actives, inactives = _load_oof(pathogen, name, key)
-            out.append((actives, inactives, drugbank[name].to_numpy(dtype=float)))
+            out.append((actives, inactives, drugbank[name].to_numpy(dtype=float),
+                        reference[name].to_numpy(dtype=float)))
         return out
 
-    proba_groups = groups("y_hat", drugbank_proba)
-    rank_groups = groups("y_rank", drugbank_rank)
+    proba_groups = groups("y_hat", drugbank_proba, reference_proba)
+    rank_groups = groups("y_rank", drugbank_rank, reference_rank)
     proba_cutoffs = [_cutoff(pathogen, name, "decision_cutoff_proba") for name in names]
     rank_cutoffs = [_cutoff(pathogen, name, "decision_cutoff_rank") for name in names]
 
-    colors = (nc.crimson, nc.cobalt, nc.amber)  # actives, inactives, DrugBank
-    labels = ("Actives (OOF)", "Inactives (OOF, incl. added)", "DrugBank")
+    colors = (nc.crimson, nc.cobalt, nc.amber, nc.lime)  # actives, inactives, DrugBank, reference
+    labels = ("Actives (OOF)", "Inactives (OOF, incl. added)",
+              f"DrugBank ({len(drugbank_rank):,} compounds)",
+              f"Reference library ({len(reference_rank):,} compounds)")
 
     # Explicit size (like 10b): the default grid is a very wide, short strip in which the
-    # y labels and 10 datasets x 3 boxplots per panel do not fit.
+    # y labels and 10 datasets x 4 boxplots per panel do not fit.
     fig, axs = stylia.create_figure(2, 1, width=0.8, height=0.4)
     plot_distributions(axs.next(), names, proba_groups, proba_cutoffs, colors, rng,
                        ylabel="Predict\nprobabilities", legend_labels=labels,
-                       title=f"{pathogen_name} ({n} dataset{'s' if n != 1 else ''})",
+                       title=f"{pathogen_name} ({n} model{'s' if n != 1 else ''})",
                        oof_cutoff=False)
     plot_distributions(axs.next(), names, rank_groups, rank_cutoffs, colors, rng,
                        ylabel="Predict\nrank scores", xlabel="Dataset")

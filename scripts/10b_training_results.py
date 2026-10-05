@@ -249,7 +249,7 @@ def plot_pathogen(report_pathogen: pd.DataFrame, pathogen: str, pathogen_name: s
     # Default width, but an explicit height: the default canvas is a 3:1 strip, which suits
     # panels side by side and squashes four stacked ones until their y labels collide.
     fig, axs = stylia.create_figure(4, 1, height=1.0)
-    plot_auroc(axs.next(), report, has_added, nc, title=f"{pathogen_name} ({n} datasets)")
+    plot_auroc(axs.next(), report, has_added, nc, title=f"{pathogen_name} ({n} model{'s' if n != 1 else ''})")
     plot_oof_ranks(axs.next(), report, pathogen, nc, rng)
     plot_composition(axs.next(), report, n_added_all, nc)
     plot_weights(axs.next(), report, has_added, nc)
