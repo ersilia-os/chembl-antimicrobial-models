@@ -74,8 +74,9 @@ See [scripts/README.md](scripts/README.md) for a description of each step.
 | 10a | `scripts/10a_aggregate_reports.py` |
 | 10b | `scripts/10b_training_results.py` |
 | 11  | `scripts/11_download_drugbank.py` |
-| 12a | `scripts/12a_predict_drugbank.py` / `scripts/12a_predict_drugbank_local.py` |
-| 12b | `scripts/12b_fit_transformation.py` |
+| 12a | `scripts/12a_predict_reference.py` *(HPC)* |
+| 12b | `scripts/12b_predict_drugbank.py` *(HPC)* |
+| 12c | `scripts/12c_plot_organism_summary.py` |
 | 13  | `scripts/13_predict_drugbank_ersilia.sh` |
 | 14  | `scripts/14_consensus_scoring.py` |
 | 15  | `scripts/15_recapitulate_models.py` |
@@ -111,7 +112,9 @@ chembl-antimicrobial-models/
     ├── 09_models/                  # Trained LazyQSAR models (one dir per dataset)
     ├── 09_logs/                    # SLURM logs for model training
     ├── 10_reports/                 # 10_reports.csv, 10_discarded_models.csv, plots/ (10b)
-    ├── 12_drugbank/                # Per-pathogen DrugBank rank predictions + 12b tanh fit
+    ├── 12_reference/               # Per-pathogen rank predictions on the 50K reference library (12a)
+    ├── 12_drugbank/                # Per-pathogen DrugBank rank predictions (12b)
+    ├── 12c_organism_summary/       # Per-pathogen score distributions: training folds vs DrugBank (12c)
     ├── 13_drugbank_ersilia/        # Single-model Ersilia Hub predictions on DrugBank
     ├── 14_consensus/               # Per-pathogen consensus + unweighted/transformed variants
     ├── 15_recapitulate_models/     # Pairwise model agreement

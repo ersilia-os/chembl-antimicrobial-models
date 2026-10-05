@@ -1,24 +1,30 @@
 """
-Step 12a (array) — Predict DrugBank scores for one (pathogen, predict type) per SLURM task.
+Step 12b (array) — Predict DrugBank scores for one (pathogen, predict type) per SLURM task.
 
-Intended to run as a SLURM array job via 12a_run_array.sh, with the task_id mapping to one
+Intended to run as a SLURM array job via 12b_run_array.sh, with the task_id mapping to one
 (pathogen, predict_type) combination:
     pathogen_idx, type_idx = divmod(task_id, len(PREDICT_TYPES))
 over the 15 pathogens (src/default.py PATHOGENS, fixed order) x 6 predict types below.
 
-Same underlying computation as 12a_predict_drugbank_local.py --pathogen <p> for a single predict
-type, but split so each (pathogen, type) pair runs as its own cluster job instead of looping
-over all 6 types in series in one process. Descriptors ARE recomputed independently per task
+Same underlying computation as tmp/12b_predict_drugbank_local.py --pathogen <p> for a single
+predict type, but split so each (pathogen, type) pair runs as its own cluster job instead of
+looping over all 6 types in series in one process. Descriptors ARE recomputed independently per task
 (not shared across pathogens or types) — that's the accepted tradeoff for wall-clock
 parallelism on the cluster.
 
 Skip-if-exists: if the target output/12_drugbank/{type}/{pathogen}.csv already exists (e.g.
-produced by a concurrent `12a_predict_drugbank_local.py --all_pathogens` run), the task exits
+produced by a concurrent `tmp/12b_predict_drugbank_local.py --all_pathogens` run), the task exits
 immediately without recomputing — this lets the array run safely alongside that local job,
-picking up only the (pathogen, type) combinations it hasn't produced yet.
+picking up only the (pathogen, type) combinations it hasn't produced yet. The output is written in
+place, so a task killed mid-write leaves a file that a rerun would accept: after a kill, delete
+that task's file first.
+
+Reproducibility: each (pathogen, type) is a separate task that recomputes everything on whichever
+node it lands on, and the six types of a pathogen are not bit-consistent with each other (CPU-
+dependent floating point amplified by the tree heads). See scripts/README.md for the size.
 
 Usage:
-    python scripts/12a_predict_drugbank.py <task_id>
+    python scripts/12b_predict_drugbank.py <task_id>
     # task_id: 0-based index, 0 to (n_pathogens * n_predict_types - 1)
 """
 
@@ -35,10 +41,10 @@ sys.path.append(os.path.join(ROOT, "..", "src"))
 
 from default import PATHOGENS  # noqa: E402
 
-# Point lazyqsar to the project weights directory (mirrors 12a_predict_drugbank_local.py / 09_run_models.sh).
+# Point lazyqsar to the project weights directory (mirrors 12a_predict_reference.py / 09_run_models.sh).
 os.environ["HOME"] = os.path.join(REPO_ROOT, "output", "08_weights")
 
-# Same list, same order, as 12a_predict_drugbank_local.py — kept in sync manually since that script's
+# Same list, same order, as 12a_predict_reference.py — kept in sync manually since that script's
 # filename starts with a digit and can't be imported as a normal Python module.
 PREDICT_TYPES = ["rank", "proba", "score", "logit", "lift", "binary"]
 
@@ -112,6 +118,6 @@ def run(task_id: int) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Usage: python 12a_predict_drugbank.py <task_id>", file=sys.stderr)
+        print("Usage: python 12b_predict_drugbank.py <task_id>", file=sys.stderr)
         sys.exit(1)
     run(int(sys.argv[1]))
