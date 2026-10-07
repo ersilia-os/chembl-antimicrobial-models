@@ -8,6 +8,10 @@ For each pathogen, renders a 2-panel figure of the full weighted consensus of st
       molecules of the reference library (green). Both share the y axis, so the shift is visible. Over the consensus rank, a dashed line marks the decision
       rank 0.65 and the text gives the % of each group at or above it. The reference library is the
       set the calibration is built on, so about 1% of it is at or above 0.65 by design.
+      Every boxplot: box from the 25th to the 75th percentile with a line at the median, whiskers at
+      the 5th and 95th percentiles, and circles at the 90th (orchid, purple) and 99th (fuchsia)
+      percentiles (as in 12c); the legend says so. After calibration the reference group's 90th and
+      99th percentiles fall on the 0.50 and 0.65 anchors by construction.
   (b) Scatter of the raw consensus (x) against the consensus rank (y), with the Spearman
       correlation of each group in the legend. The calibration is a monotone map, so the order of
       compounds cannot change and Spearman is 1 (up to the ties that the 6-decimal rounding of the
@@ -41,6 +45,7 @@ import sys
 import numpy as np
 import pandas as pd
 import stylia
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from scipy.stats import spearmanr
 from stylia import ArticleColors, save_figure
@@ -66,6 +71,11 @@ HALF_WIDTH = 0.14
 
 # Height at which each group's "% at or above the decision rank" is written.
 LABEL_Y = 0.95
+
+# Extra percentiles marked on every boxplot, beyond the box (25-75) and whiskers (5-95), as circles
+# (as in 12c): (percentile, ArticleColors name). Black outline, thinner than stylia's default of 1.0.
+MARKED_PERCENTILES = ((90, "orchid"), (99, "fuchsia"))
+MARKER_EDGE_WIDTH = 0.5
 
 
 def _pct_label(fraction: float) -> str:
@@ -120,11 +130,13 @@ def load_consensus(pathogen: str) -> dict:
     return out
 
 
-def plot_distributions(ax, data: dict, colors: tuple, rng, legend_labels: tuple, title: str) -> None:
+def plot_distributions(ax, data: dict, colors: tuple, rng, legend_labels: tuple, title: str,
+                       marker_fills: list) -> None:
     """Panel (a): raw consensus and consensus rank, DrugBank and reference side by side in each.
 
     Each group is the jittered points, a violin over them (kernel density, over the full range of
-    the values) and the boxplot (quartiles, whiskers at the 5th and 95th percentiles) on top.
+    the values) and the boxplot (quartiles, whiskers at the 5th and 95th percentiles) on top, with a
+    circle at each of *marker_fills*' percentiles.
     """
     for slot, column in enumerate((0, 1)):                 # 0 = raw, 1 = rank
         for offset, dataset, color in zip(OFFSETS, ("drugbank", "reference"), colors):
@@ -141,6 +153,9 @@ def plot_distributions(ax, data: dict, colors: tuple, rng, legend_labels: tuple,
             bp = ax.bxp([_box_stats(values)], positions=[slot + offset],
                         widths=HALF_WIDTH, patch_artist=True, showfliers=False)
             _style_boxes(bp)
+            for q, fill in marker_fills:
+                ax.plot([slot + offset], [np.percentile(values, q)], marker="o", linestyle="none",
+                        markerfacecolor=fill, markeredgecolor="k", markeredgewidth=MARKER_EDGE_WIDTH)
             if column == 1:
                 ax.text(slot + offset, LABEL_Y, _pct_label(np.mean(values >= DECISION_RANK)),
                         ha="center", va="center", fontsize=5,
@@ -151,7 +166,16 @@ def plot_distributions(ax, data: dict, colors: tuple, rng, legend_labels: tuple,
     ax.set_ylim([0, 1])
     ax.set_xticks([0, 1])
     ax.set_xticklabels(["Raw consensus\n(before calibration)", "Consensus rank\n(after calibration)"])
-    ax.legend(handles=[Patch(facecolor=c, edgecolor="none", label=l) for c, l in zip(colors, legend_labels)],
+    handles = [Patch(facecolor=c, edgecolor="none", label=l) for c, l in zip(colors, legend_labels)]
+    handles += [
+        Patch(facecolor="none", edgecolor="k", linewidth=0.8, label="Box: p25 to p75, line at the median"),
+        Line2D([], [], color="k", label="Whiskers: p5 to p95"),
+    ] + [
+        Line2D([], [], marker="o", linestyle="none", markeredgecolor="k", markerfacecolor=fill,
+               markeredgewidth=MARKER_EDGE_WIDTH, label=f"p{q}")
+        for q, fill in marker_fills
+    ]
+    ax.legend(handles=handles,
               fontsize=5, loc="upper left", frameon=True, framealpha=0.85, handlelength=1.0,
               handletextpad=0.4, borderpad=0.3)
     stylia.label(ax, xlabel="", ylabel="Consensus score", title=title)
@@ -186,9 +210,10 @@ def plot_pathogen(pathogen: str, pathogen_name: str, nc, rng) -> tuple:
     labels = (f"DrugBank ({len(data['drugbank'][0]):,} compounds)",
               f"Reference library ({len(data['reference'][0]):,} compounds)")
 
+    marker_fills = [(q, getattr(nc, name)) for q, name in MARKED_PERCENTILES]
     fig, axs = stylia.create_figure(1, 2)
     plot_distributions(axs.next(), data, colors, rng, labels,
-               title=f"{pathogen_name} ({n_models} models)")
+                       title=f"{pathogen_name} ({n_models} models)", marker_fills=marker_fills)
     rhos = plot_scatter(axs.next(), data, colors, labels)
 
     out_path = os.path.join(OUT_DIR, f"14b_{pathogen}.png")
