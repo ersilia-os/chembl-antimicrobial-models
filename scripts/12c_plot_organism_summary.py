@@ -8,6 +8,9 @@ For each pathogen, renders a 2-panel figure (panels stacked, one slot per datase
       50,000 molecules of the LazyQSAR reference library (green), with the model's
       decision_cutoff_proba as a dotted line over the last two.
   (b) The same four groups for the rank scores, with decision_cutoff_rank as a dotted line.
+Every boxplot: box from the 25th to the 75th percentile with a line at the median, whiskers at the 5th
+and 95th percentiles, and circles at the 90th (orchid, purple) and 99th (fuchsia) percentiles; the
+legend of panel (a) says so.
 Above each group (y = 0.95) the text gives the % of its compounds at or above the cutoff
 (>=, the comparison lazyqsar's `binary` output uses). In (b) that is the rank 0.65 every model
 was cut at, for all four groups. In (a) only the DrugBank and reference groups have a cutoff
@@ -49,6 +52,7 @@ import sys
 import numpy as np
 import pandas as pd
 import stylia
+from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from stylia import ArticleColors, save_figure
 
@@ -73,6 +77,13 @@ N_OOF = 2
 
 # Height at which each group's "% of compounds at or above the cutoff" is written.
 LABEL_Y = 0.95
+
+# Extra percentiles marked on every boxplot, beyond the box (25-75) and whiskers (5-95), as circles:
+# (percentile, fill), the fill being "white" or an ArticleColors name not used by the four groups
+# (orchid is the palette's purple). Black outline, thinner than stylia's default of 1.0.
+# On the rank scale p90 and p99 of the reference group sit at the 0.50 and 0.65 anchors by construction.
+MARKED_PERCENTILES = ((90, "orchid"), (99, "fuchsia"))
+MARKER_EDGE_WIDTH = 0.5
 
 
 def _pct_label(fraction: float) -> str:
@@ -136,8 +147,13 @@ def _set_x(ax, names: list, show_labels: bool) -> None:
         ax.set_xticklabels([""] * n)
 
 
+def _marker_fills(nc) -> list:
+    """(percentile, fill colour) of the marked percentiles, the colour names resolved through *nc*."""
+    return [(q, fill if fill == "white" else getattr(nc, fill)) for q, fill in MARKED_PERCENTILES]
+
+
 def plot_distributions(ax, names: list, groups: list, cutoffs: list, colors: tuple, rng,
-                       ylabel: str, xlabel: str = "", title: str = "",
+                       marker_fills: list, ylabel: str, xlabel: str = "", title: str = "",
                        legend_labels: tuple = None, oof_cutoff: bool = True) -> None:
     """Three boxplots (+ jittered points) per dataset slot.
 
@@ -154,6 +170,9 @@ def plot_distributions(ax, names: list, groups: list, cutoffs: list, colors: tup
             bp = ax.bxp([_box_stats(values)], positions=[i + offset],
                         widths=HALF_WIDTH * 2, patch_artist=True, showfliers=False)
             _style_boxes(bp)
+            for q, fill in marker_fills:
+                ax.plot([i + offset], [np.percentile(values, q)], marker="o", linestyle="none",
+                        markerfacecolor=fill, markeredgecolor="k", markeredgewidth=MARKER_EDGE_WIDTH)
             if oof_cutoff or g >= N_OOF:
                 ax.text(i + offset, LABEL_Y, _pct_label(np.mean(values >= cutoffs[i])),
                         ha="center", va="center", fontsize=5,
@@ -164,9 +183,17 @@ def plot_distributions(ax, names: list, groups: list, cutoffs: list, colors: tup
     ax.set_ylim([0, 1])
     _set_x(ax, names, show_labels=bool(xlabel))
     if legend_labels:
+        handles = [Patch(facecolor=c, edgecolor="none", label=l) for c, l in zip(colors, legend_labels)]
+        handles += [
+            Patch(facecolor="none", edgecolor="k", linewidth=0.8, label="Box: p25 to p75, line at the median"),
+            Line2D([], [], color="k", label="Whiskers: p5 to p95"),
+        ] + [
+            Line2D([], [], marker="o", linestyle="none", markeredgecolor="k", markerfacecolor=fill,
+                   markeredgewidth=MARKER_EDGE_WIDTH, label=f"p{q}")
+            for q, fill in marker_fills
+        ]
         ax.legend(
-            handles=[Patch(facecolor=c, edgecolor="none", label=l)
-                     for c, l in zip(colors, legend_labels)],
+            handles=handles,
             fontsize=5, loc="upper left", bbox_to_anchor=(1.005, 1.0), frameon=True,
             framealpha=0.85, handlelength=1.0, handletextpad=0.4, borderpad=0.3,
         )
@@ -207,11 +234,12 @@ def plot_pathogen(pathogen: str, pathogen_name: str, nc, rng) -> str:
     # Explicit size (like 10b): the default grid is a very wide, short strip in which the
     # y labels and 10 datasets x 4 boxplots per panel do not fit.
     fig, axs = stylia.create_figure(2, 1, width=0.8, height=0.4)
-    plot_distributions(axs.next(), names, proba_groups, proba_cutoffs, colors, rng,
+    marker_fills = _marker_fills(nc)
+    plot_distributions(axs.next(), names, proba_groups, proba_cutoffs, colors, rng, marker_fills,
                        ylabel="Predict\nprobabilities", legend_labels=labels,
                        title=f"{pathogen_name} ({n} model{'s' if n != 1 else ''})",
                        oof_cutoff=False)
-    plot_distributions(axs.next(), names, rank_groups, rank_cutoffs, colors, rng,
+    plot_distributions(axs.next(), names, rank_groups, rank_cutoffs, colors, rng, marker_fills,
                        ylabel="Predict\nrank scores", xlabel="Dataset")
 
     out_path = os.path.join(OUT_DIR, f"12c_{pathogen}.png")
