@@ -10,6 +10,10 @@ rows plus a final row split into two columns:
   [3] AUROC from per-model recapitulation (off-diagonal pairs): histogram
       (left column) and reversed-cumulative distribution (right column)
 
+Boxplots of panels [0] and [1] are drawn as in 12c and 14b: box from the 25th to the 75th
+percentile with a line at the median, whiskers at the 5th and 95th percentiles, and circles at the
+90th (orchid, purple) and 99th (fuchsia) percentiles; a legend above panel [0] says so.
+
 On the reference library panels [0] and [1] are a calibration check, not a measurement: every
 rank there is a position against that same library, so each distribution is fixed by construction
 (and 1% of the consensus sits at rank >= 0.65). Panels [2] and [3] are real agreement measurements.
@@ -38,6 +42,7 @@ import os
 import sys
 
 import matplotlib.patches as mpatches
+from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 import stylia
@@ -66,29 +71,56 @@ os.makedirs(OUT_DIR, exist_ok=True)
 AUROC_COLS   = [f"auroc_{s}" for s in THRESHOLD_SFXS]
 AUROC_LABELS = [f"{t * 100:g}%" for t in THRESHOLDS]
 
+# Boxplots as in 12c and 14b: whiskers at the 5th and 95th percentiles, and circles at extra
+# percentiles: (percentile, ArticleColors name). Black outline, thinner than stylia's default of 1.0.
+WHISKER_PERCENTILES = (5, 95)
+MARKED_PERCENTILES  = ((90, "orchid"), (99, "fuchsia"))
+MARKER_EDGE_WIDTH   = 0.5
+BOX_LINE_WIDTH      = 0.4
 
-def _plot_col(ax, values, pos, bw, color, rng):
+
+def _plot_col(ax, values, pos, bw, color, rng, marker_fills):
     jitter = pos + rng.uniform(-bw, bw, size=len(values))
     ax.scatter(jitter, values, color=color, s=1, alpha=0.2, lw=0)
     stats = dict(
         med=np.median(values),
         q1=np.percentile(values, 25),
         q3=np.percentile(values, 75),
-        whislo=np.percentile(values, 1),
-        whishi=np.percentile(values, 99),
+        whislo=np.percentile(values, WHISKER_PERCENTILES[0]),
+        whishi=np.percentile(values, WHISKER_PERCENTILES[1]),
         fliers=[],
     )
     bp = ax.bxp([stats], positions=[pos], widths=bw * 2,
                 patch_artist=True, showfliers=False)
     bp["boxes"][0].set_facecolor("none")
-    bp["boxes"][0].set_linewidth(0.4)
+    bp["boxes"][0].set_linewidth(BOX_LINE_WIDTH)
     for elem in ["whiskers", "caps", "medians"]:
         for line in bp[elem]:
             line.set_color("k")
-            line.set_linewidth(0 if elem == "caps" else 0.4)
+            line.set_linewidth(0 if elem == "caps" else BOX_LINE_WIDTH)
+    for q, fill in marker_fills:
+        ax.plot([pos], [np.percentile(values, q)], marker="o", linestyle="none",
+                markerfacecolor=fill, markeredgecolor="k", markeredgewidth=MARKER_EDGE_WIDTH)
 
 
-def _consensus_panel(ax, df, model_cols, nc, rng, ylabel):
+def _box_legend(ax, marker_fills):
+    """Legend for the boxplots (box, whiskers, marked percentiles), above *ax* like panel [2]'s."""
+    handles = [
+        mpatches.Patch(facecolor="none", edgecolor="k", linewidth=BOX_LINE_WIDTH,
+                       label="Box: p25 to p75, line at the median"),
+        Line2D([], [], color="k", linewidth=BOX_LINE_WIDTH,
+               label=f"Whiskers: p{WHISKER_PERCENTILES[0]} to p{WHISKER_PERCENTILES[1]}"),
+    ] + [
+        Line2D([], [], marker="o", linestyle="none", markeredgecolor="k", markerfacecolor=fill,
+               markeredgewidth=MARKER_EDGE_WIDTH, label=f"p{q}")
+        for q, fill in marker_fills
+    ]
+    ax.legend(handles=handles, fontsize=6, ncol=len(handles), loc="lower right",
+              bbox_to_anchor=(1.0, 1.0), frameon=False, borderpad=0, columnspacing=1.0,
+              handletextpad=0.5)
+
+
+def _consensus_panel(ax, df, model_cols, nc, rng, ylabel, marker_fills):
     # One leave-one-out column per model, in the model order of panel [0]
     excl_cols = [f"consensus_rank_without_{m}" for m in model_cols]
     all_cols  = excl_cols + ["consensus_rank"]
@@ -100,7 +132,7 @@ def _consensus_panel(ax, df, model_cols, nc, rng, ylabel):
     ax.set_xlim([-0.7, NC - 0.3])
     for i, col in enumerate(all_cols):
         color = nc.turquoise if col == "consensus_rank" else nc.amber
-        _plot_col(ax, df[col].dropna().values, i, w_c, color, rng)
+        _plot_col(ax, df[col].dropna().values, i, w_c, color, rng, marker_fills)
     ax.set_xticks(range(NC))
     ax.set_xticklabels(xlabels, rotation=0, size=9)
     ax.set_xlabel(None)
@@ -221,6 +253,7 @@ def plot_pathogen(pathogen, pathogen_name, dataset, reports, pal, rng):
     # Distinct per-cutoff colors for panel [2]; chosen to not repeat amber/turquoise
     # (panel [1]) or the npg histogram colors (panel [3]).
     cutoff_colors = [nc.cobalt, nc.orchid, nc.lime]
+    marker_fills = [(q, getattr(nc, name)) for q, name in MARKED_PERCENTILES]
 
     # 4x2 grid: rows 0-2 are merged into full-width single panels; the last
     # row keeps both columns so panel [3] can be duplicated side by side.
@@ -249,7 +282,7 @@ def plot_pathogen(pathogen, pathogen_name, dataset, reports, pal, rng):
     ax.set_ylim([0, 1])
     ax.set_xlim(shared_xlim)
     for i, model in enumerate(model_cols):
-        _plot_col(ax, df12[model].dropna().values, i, w_db, pal.get(8)[4], rng)
+        _plot_col(ax, df12[model].dropna().values, i, w_db, pal.get(8)[4], rng, marker_fills)
         if model in report_p.index:
             c = report_p.loc[model, "decision_cutoff_rank"]
             ax.plot([i - w_db * 2, i + w_db * 2], [c, c],
@@ -257,9 +290,10 @@ def plot_pathogen(pathogen, pathogen_name, dataset, reports, pal, rng):
     ax.set_xticks(range(N))
     ax.set_xticklabels(range(N), rotation=0, size=9)
     ax.set_xlabel(None)
+    _box_legend(ax, marker_fills)
 
     # [1] Consensus rank: weighted
-    _consensus_panel(ax1, df14_w, model_cols, nc, rng, "Consensus rank")
+    _consensus_panel(ax1, df14_w, model_cols, nc, rng, "Consensus rank", marker_fills)
     ax1.set_xlim(shared_xlim)
 
     # [2] AUROC consensus-without each model (weighted), colored per cutoff
