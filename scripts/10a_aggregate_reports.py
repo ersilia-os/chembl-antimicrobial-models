@@ -43,10 +43,18 @@ weight w7 — the decision-cutoff ramp — is added only in the consensus (step 
 unrelated to w_screen.
 final_normalized_weight rescales final_weight within each pathogen to sum to 100.
 
+--pathogens restricts the run to the given pathogen codes (e.g. while other pathogens are still
+training). Weights are computed per dataset and normalized within each pathogen, so a pathogen's
+rows are identical whether it is aggregated alone or with the rest. Both output files then hold
+only those pathogens; run again without the option, once every model is trained, to rewrite them
+in full.
+
 Usage:
     python scripts/10a_aggregate_reports.py
+    python scripts/10a_aggregate_reports.py --pathogens abaumannii ecoli
 """
 
+import argparse
 import json
 import os
 import sys
@@ -299,8 +307,29 @@ def _type_rank(mrow) -> int:
     return tier + cat
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Aggregate per-dataset CV reports (step 10a).")
+    parser.add_argument(
+        "--pathogens", nargs="+", metavar="CODE",
+        help="aggregate only these pathogens (default: all). Both output files then hold only them.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     meta_df = pd.read_csv(METADATA_PATH)
+    if args.pathogens:
+        known = set(meta_df["pathogen"])
+        unknown = sorted(set(args.pathogens) - known)
+        if unknown:
+            raise ValueError(f"--pathogens: unknown code(s) {unknown}; known: {sorted(known)}")
+        meta_df = meta_df[meta_df["pathogen"].isin(args.pathogens)].reset_index(drop=True)
+        print(
+            f"--pathogens: aggregating {len(set(args.pathogens))} of {len(known)} pathogens "
+            f"({', '.join(sorted(set(args.pathogens)))}); the output files hold only these. "
+            "Re-run without --pathogens once every model is trained."
+        )
     n_total = len(meta_df)
     records = []
     discarded = []
