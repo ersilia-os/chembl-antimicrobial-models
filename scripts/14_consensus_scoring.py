@@ -12,15 +12,23 @@ the same way:
      output/10_reports/10_reports.csv, plus the per-compound ramp w7 (0 at or below the model's
      decision cutoff, rising to 1 at rank 1). weight = mean of the eight terms;
      consensus = sum_m(rank * weight) / sum_m(weight).
-  3. read where the reference consensus sits at its p50 / p90 / p99 / p99.9, and map those four
-     values to 0.25 / 0.50 / 0.65 / 0.75 (piecewise linear, LazyQSAR's own rule), with a straight
-     line from the last anchor to (raw 1.0 -> rank 1.0) above it
+  3. map the raw consensus to the rank scale with LazyQSAR's smooth rank (`rank_from_reference`),
+     using all 50,000 raw reference values as the reference: a value is read as its percentile
+     against them and passed through the corner-free curve that sends the reference's p50 / p90 /
+     p99 / p99.9 to 0.25 / 0.50 / 0.65 / 0.75, exactly as every sub-model's rank is built. No
+     actives anchor (a consensus has none), so the top follows LazyQSAR's no-actives rule.
   4. push each DrugBank compound's consensus through that map; the reference molecules are pushed
      through it too, so their consensus is written next to DrugBank's
 
 The result reads like a sub-model's rank: consensus_rank >= 0.65 means "beats 99% of drug-like
 chemistry", so the cutoff keeps its meaning and about 1% of generic chemistry passes it by
-construction. The order of compounds is untouched (the map is monotone).
+construction. The order of compounds is untouched: every column is checked, before rounding, to
+order the molecules exactly as its raw consensus does (Spearman exactly 1, no new ties).
+
+Up to the 3.6 run step 3 was a piecewise-linear table from (raw 0 -> 0) through the anchors to
+(raw 1 -> 1). Raw consensus never comes near 0, so ranks below ~0.17 were never used and the lower
+half of the reference piled up just under 0.25. The same anchors, cutoff and hits under both maps;
+anchors.json records, per column, how far the smooth map moves the values from that table.
 
 Every column has its own anchors, because each averages a different set of models: the full
 consensus and each leave-one-out consensus (all models except one), weighted and unweighted.
@@ -35,12 +43,17 @@ Outputs, one folder per pathogen: output/14_consensus/{pathogen}/
                                   the molecules the anchors were built from, so about 1% of
                                   reference_rank is at or above 0.65 by construction: the files show
                                   the distribution the scale is defined on, not an independent test.
-  anchors.json                    the anchor table of every column, the bootstrap standard error of
-                                  its four anchors (diagnostic only), and a fingerprint of the
-                                  models, weights and cutoffs it was built with
-
-Step 18b ships the anchor table to the Hub models and refuses to if the fingerprint no longer
-matches the reports it is shipping.
+  anchors.json                    per column: the raw consensus at the four anchors, their bootstrap
+                                  standard error (diagnostic only), the hits at the cutoff and the
+                                  change from the old straight-line map; plus a fingerprint of the
+                                  models, weights and cutoffs it was built with. The map's reference
+                                  is the column's own reference consensus (reference_raw*.csv
+                                  holds it, rounded to 6 decimals), so it is not repeated here.
+  consensus_knots.npy             the map's reference for the full weighted consensus, unrounded
+                                  (the 50,000 reference values, sorted, float64; ~390 KB). Its
+                                  SHA-256 is in anchors.json. Step 18b ships this file to the Hub
+                                  model, whose consensus.py maps through it with the same LazyQSAR
+                                  function, so the Hub reproduces consensus_rank exactly.
 
 Fails (exit code 1) if a pathogen with two or more retained models is skipped for missing inputs,
 so a partial run cannot pass unnoticed.
@@ -86,6 +99,7 @@ W_WEIGHTS   = np.ones(len(QUALITY_WEIGHT_COLS) + 1)
 N_BOOTSTRAP = 200      # resamples of the reference for the anchor standard errors (diagnostic only)
 DECIMALS    = 6        # decimals written to the CSVs; the hit counts use the same rounded values
 SHARE_TOL   = 0.001    # the reference share at rank >= cutoff must be 1% +/- this (a self-check)
+KNOTS_FILE  = "consensus_knots.npy"   # same name in the Hub model's checkpoints (src/hub_consensus.py)
 
 
 def at_cutoff(rank: np.ndarray) -> np.ndarray:
@@ -157,8 +171,8 @@ def score_variant(inp: dict, weighted: bool, boot_idx: np.ndarray):
 
     Returns (columns, tables). `columns[dataset]["raw" | "rank"]` holds the consensus columns of that
     dataset ("drugbank" or "reference") on the raw and on the rank scale; `tables` holds the anchor
-    table of each column. Reference and DrugBank go through the same function, so the anchors
-    describe exactly the scores they are applied to.
+    diagnostics of each column. Reference and DrugBank go through the same function, so the map
+    describes exactly the scores it is applied to.
     """
     models, m = inp["models"], len(inp["models"])
     subsets = [("full", list(range(m)))] + [
@@ -175,25 +189,40 @@ def score_variant(inp: dict, weighted: bool, boot_idx: np.ndarray):
     for name, idx in subsets:
         ref_raw = consensus(inp["reference"], idx)
         db_raw  = consensus(inp["drugbank"], idx)
-        x, y    = cs.build_anchor_table(ref_raw)
+        prepared = cs.build_smooth_reference(ref_raw)
 
-        ref_rank = cs.apply_anchor_table(ref_raw, x, y)
+        ref_rank = cs.to_rank(ref_raw, prepared)
         share = float(at_cutoff(ref_rank).mean())
         if abs(share - 0.01) > SHARE_TOL:
             raise AssertionError(f"anchor self-check failed for '{name}': {share:.4%} of the reference "
                                  f"is at or above rank {DECISION_RANK}, expected 1%")
-        rank = cs.apply_anchor_table(db_raw, x, y)
+        rank = cs.to_rank(db_raw, prepared)
+        label = f"{'weighted' if weighted else 'unweighted'} '{name}'"
+        cs.check_order(ref_raw, ref_rank, f"{label}, reference")
+        cs.check_order(db_raw,  rank,     f"{label}, DrugBank")
+
+        # Diagnostic only: the 3.6 straight-line map on the same raw values (same anchors).
+        x_old, y_old = cs.build_anchor_table(ref_raw)
+        ref_old = cs.apply_anchor_table(ref_raw, x_old, y_old)
+        db_old  = cs.apply_anchor_table(db_raw,  x_old, y_old)
 
         suffix = "" if name == "full" else f"_without_{name}"
         for dataset, raw_values, rank_values in (("drugbank", db_raw, rank), ("reference", ref_raw, ref_rank)):
             columns[dataset]["raw"][f"consensus_raw{suffix}"]   = raw_values
             columns[dataset]["rank"][f"consensus_rank{suffix}"] = rank_values
         table = {
-            "x": x.tolist(), "y": y.tolist(),
             "anchors_raw": cs.anchor_values(ref_raw).tolist(),
             "anchors_se":  cs.anchor_standard_errors(ref_raw, boot_idx).tolist(),
+            "reference_share_at_anchors": [float((np.round(ref_rank, DECIMALS) >= r).mean()) for r in cs.ANCHOR_RANKS],
             "reference_share_at_cutoff": share,
             "drugbank_hits_at_cutoff": int(at_cutoff(rank).sum()),
+            "vs_straight_line": {
+                "drugbank_hits_at_cutoff": int(at_cutoff(db_old).sum()),
+                "reference_max_abs_change": float(np.abs(ref_rank - ref_old).max()),
+                "reference_median_abs_change": float(np.median(np.abs(ref_rank - ref_old))),
+                "drugbank_max_abs_change": float(np.abs(rank - db_old).max()),
+                "drugbank_median_abs_change": float(np.median(np.abs(rank - db_old))),
+            },
         }
         if name == "full":
             tables["full"] = table
@@ -226,6 +255,11 @@ def run(pathogen: str, drugbank_dir: str, reference_dir: str, reports: pd.DataFr
                 pd.DataFrame({"smiles": smiles[dataset], **cols[scale]}).round(DECIMALS).to_csv(
                     os.path.join(folder, f"{prefix}_{scale}.csv"), index=False)
 
+    # The map of the full weighted consensus, unrounded, for the Hub model (step 18b ships it).
+    knots = np.sort(np.asarray(cols_w["reference"]["raw"]["consensus_raw"], dtype=np.float64))
+    knots_path = os.path.join(folder, KNOTS_FILE)
+    np.save(knots_path, knots, allow_pickle=False)
+
     anchors = {
         "pathogen": pathogen,
         "created_by": "scripts/14_consensus_scoring.py",
@@ -236,7 +270,11 @@ def run(pathogen: str, drugbank_dir: str, reference_dir: str, reports: pd.DataFr
         },
         "scale": {
             "percentiles": cs.ANCHOR_PERCENTILES, "ranks": cs.ANCHOR_RANKS, "decision_rank": DECISION_RANK,
-            "top_of_scale": "straight line from (reference p99.9 -> 0.75) to (raw 1.0 -> rank 1.0); no actives anchor",
+            "map": "lazyqsar.utils.ranking.rank_from_reference (smooth, no actives anchor)",
+            "knots": "the column's own reference consensus_raw, all values, unrounded",
+            "n_knots": identity.default_n(),
+            "knots_file": {"name": KNOTS_FILE, "column": "weighted full", "n": len(knots),
+                           "sha256": cs.file_sha256(knots_path)},
         },
         "models": models,
         "weights": {
@@ -259,7 +297,10 @@ def run(pathogen: str, drugbank_dir: str, reference_dir: str, reports: pd.DataFr
         + "  ".join(f"p{q:g}={v:.3f}±{se:.3f}" for q, v, se in zip(cs.ANCHOR_PERCENTILES, a_raw, a_se)) + "\n"
         f"      DrugBank at consensus_rank >= {DECISION_RANK}: {full['drugbank_hits_at_cutoff']:,} "
         f"({100 * full['drugbank_hits_at_cutoff'] / n_db:.2f}%)  "
-        f"[reference: {100 * full['reference_share_at_cutoff']:.2f}%]"
+        f"[reference: {100 * full['reference_share_at_cutoff']:.2f}%]\n"
+        f"      vs the 3.6 straight-line map: DrugBank hits {full['vs_straight_line']['drugbank_hits_at_cutoff']:,}; "
+        f"reference |change| median {full['vs_straight_line']['reference_median_abs_change']:.3f}, "
+        f"max {full['vs_straight_line']['reference_max_abs_change']:.3f}"
     )
 
 

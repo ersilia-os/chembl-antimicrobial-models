@@ -1,19 +1,20 @@
 """Quality-weighted consensus across the LazyQSAR sub-models of this model, on the rank scale.
 
 Shipped to every Ersilia Hub model as model/framework/code/consensus.py. Stand-alone on purpose
-(numpy and pandas only: it runs inside the Hub model, outside the repository that makes it).
-Step 18b of chembl-antimicrobial-models copies this file and bakes in the anchor table of the
-pathogen; the same formulas live in that repository's src/consensus.py (step 14), and the two are
-tested against each other.
+(numpy, pandas and lazyqsar, which the model already needs: it runs inside the Hub model, outside
+the repository that makes it). Step 18b of chembl-antimicrobial-models copies this file, bakes in the
+SHA-256 of the pathogen's calibration file (model/checkpoints/consensus_knots.npy, also shipped), and
+checks the result; the same formulas live in that repository's src/consensus.py (step 14).
 
 Each sub-model's rank (predict_type="rank") is the position of a molecule against a fixed reference
 library of 50,000 drug-like molecules: 0.65 means "scores higher than 99% of that library". A weighted
 mean of such positions is not a position against anything, so it is placed on the same scale here:
-step 14 computed the same weighted mean on the reference library, read its p50 / p90 / p99 / p99.9, and
-mapped them to 0.25 / 0.50 / 0.65 / 0.75 (and 0 -> 0, 1 -> 1). That table is _ANCHOR_X -> _ANCHOR_Y
-below, one per pathogen. Linear interpolation through it keeps the order of molecules and makes
-consensus_score read like a sub-model's rank: 0.65 is the recommended threshold, and about 1% of
-generic drug-like chemistry reaches it.
+step 14 computed the same weighted mean on the 50,000 reference molecules and saved those values
+(consensus_knots.npy). A raw consensus is placed on the rank scale with LazyQSAR's own smooth rank,
+rank_from_reference, against those values: exactly how every sub-model's rank is built. The reference's
+p50 / p90 / p99 / p99.9 land on 0.25 / 0.50 / 0.65 / 0.75, the curve has no corners between them, and
+the order of molecules is kept. So consensus_score reads like a sub-model's rank: 0.65 is the
+recommended threshold, and about 1% of generic drug-like chemistry reaches it.
 
 The weights:
 - W1..W6 and W_screen are per-sub-model quality weights, from reports.csv.
@@ -26,13 +27,16 @@ weighting, no averaging). The per-sub-model columns keep the real ranks where pr
 and NaN where it did not.
 """
 
+import hashlib
 import os
+
 import numpy as np
 import pandas as pd
+from lazyqsar.utils.ranking import rank_from_reference
 
 _W_COLS = ["w1", "w2", "w3", "w4", "w5", "w6", "w_screen"]
-_ANCHOR_X = None  # baked by step 18b: raw consensus at 0, p50, p90, p99, p99.9 of the reference, and 1
-_ANCHOR_Y = None  # baked by step 18b: the ranks they map to: 0, 0.25, 0.50, 0.65, 0.75, 1
+_KNOTS_FILE = "consensus_knots.npy"  # in model/checkpoints/: the reference library's raw consensus, sorted
+_KNOTS_SHA256 = None  # baked by step 18b: SHA-256 of that file, so a mismatched file cannot be used
 
 
 def weighted_mean(ranks, w_quality, cutoffs):
@@ -59,9 +63,21 @@ def weighted_mean(ranks, w_quality, cutoffs):
     return raw
 
 
-def to_rank_scale(raw, x, y):
-    """Place raw consensus values on the rank scale through the anchor table (monotone)."""
-    return np.clip(np.interp(raw, x, y), 0.0, 1.0)
+def load_knots(checkpoints_dir):
+    """The calibration of this model's consensus, checked against the SHA-256 baked in by step 18b."""
+    if _KNOTS_SHA256 is None:
+        raise RuntimeError("consensus.py has no calibration baked in (step 18b fills it in).")
+    path = os.path.join(checkpoints_dir, _KNOTS_FILE)
+    with open(path, "rb") as f:
+        digest = hashlib.sha256(f.read()).hexdigest()
+    if digest != _KNOTS_SHA256:
+        raise RuntimeError(f"{path} is not the calibration this consensus.py was built with (SHA-256 mismatch).")
+    return np.load(path, allow_pickle=False)
+
+
+def to_rank_scale(raw, knots):
+    """Place raw consensus values on the rank scale: LazyQSAR's smooth rank against the knots (monotone)."""
+    return np.clip(rank_from_reference(np.asarray(raw, dtype=float), knots=knots), 0.0, 1.0)
 
 
 def compute_consensus(R, cols_ordered, model_names, checkpoints_dir):
@@ -71,7 +87,7 @@ def compute_consensus(R, cols_ordered, model_names, checkpoints_dir):
         R:               (n, K) rank matrix returned by lqsar_predict.
         cols_ordered:    list of K column names matching R's columns (also from lqsar_predict).
         model_names:     canonical sub-model order for this pathogen (length M, M <= K).
-        checkpoints_dir: path to model/checkpoints/ (must contain reports.csv).
+        checkpoints_dir: path to model/checkpoints/ (must contain reports.csv and consensus_knots.npy).
 
     Returns:
         results: (n, 1+M) float array, rounded to 4 decimals.
@@ -87,20 +103,19 @@ def compute_consensus(R, cols_ordered, model_names, checkpoints_dir):
     if len(model_names) == 1:
         return np.round(ranks, 4), list(model_names)
 
-    if _ANCHOR_X is None or _ANCHOR_Y is None:
-        raise RuntimeError("consensus.py has no anchor table baked in (step 18b fills it in).")
+    knots = load_knots(checkpoints_dir)
 
     reports = pd.read_csv(os.path.join(checkpoints_dir, "reports.csv")).set_index("model_name")
     w_quality = np.array([reports.loc[m, _W_COLS].values for m in model_names], dtype=float)
     cutoffs = np.array([reports.loc[m, "decision_cutoff_rank"] for m in model_names], dtype=float)
 
     # Compounds with any NaN rank get consensus = NaN; the rest go through the weighting and the
-    # anchor table. Splitting like this keeps the NaN policy explicit and avoids invalid-value warnings.
+    # rank scale. Splitting like this keeps the NaN policy explicit and avoids invalid-value warnings.
     nan_rows = np.isnan(ranks).any(axis=1)
     consensus = np.full(ranks.shape[0], np.nan)
     if (~nan_rows).any():
         raw = weighted_mean(ranks[~nan_rows], w_quality, cutoffs)
-        consensus[~nan_rows] = to_rank_scale(raw, _ANCHOR_X, _ANCHOR_Y)
+        consensus[~nan_rows] = to_rank_scale(raw, knots)
 
     results = np.round(np.column_stack([consensus, ranks]), 4)
     header = ["consensus_score", *model_names]

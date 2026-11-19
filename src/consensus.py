@@ -9,13 +9,19 @@ The idea. A sub-model's `rank` is a position against a fixed library of 50,000 d
 molecules: rank 0.65 means "beats 99% of that library". The consensus is a weighted MEAN of several
 such positions, which is not itself a position against anything. So we place it on the same scale
 the same way: compute the consensus of the 50,000 reference molecules, read where it sits at the
-reference's p50 / p90 / p99 / p99.9, and map those four values to 0.25 / 0.50 / 0.65 / 0.75 with
-the piecewise-linear rule LazyQSAR uses for a single model (the anchor table).
+reference's p50 / p90 / p99 / p99.9, and map those four values to 0.25 / 0.50 / 0.65 / 0.75.
+
+The map (since LazyQSAR 3.9 in this repo): LazyQSAR's own smooth rank, `rank_from_reference`, with
+the reference library's raw consensus (all 50,000 values) as the reference. A raw value is read as
+its percentile against those values and passed through the monotone curve LazyQSAR uses for every
+sub-model, which goes exactly through the four anchors without corners. No out-of-fold-actives
+anchor (a consensus has none), so the top of the scale follows LazyQSAR's no-actives rule. Up to the
+3.6 run the map was a piecewise-linear table from (raw 0 -> 0) through the anchors to (raw 1 -> 1):
+it never used ranks below ~0.17 and piled the lower half of the library up just under 0.25. The
+anchors, the cutoff and the order of molecules are the same under both maps.
 
 The anchors and the decision rank are read from LazyQSAR, not copied, so the consensus scale is
-the sub-models' scale by construction. Above the last reference anchor the table runs in a straight
-line to (raw 1.0 -> rank 1.0): LazyQSAR's own fallback for a model with no out-of-fold-actives
-anchor, which a consensus cannot have.
+the sub-models' scale by construction.
 """
 
 import hashlib
@@ -25,7 +31,9 @@ import numpy as np
 from lazyqsar.utils.ranking import (
     DECISION_RANK,
     TAIL_ANCHORS,
+    _smooth_scale,
     prepare_knots,
+    rank_from_reference,
     reference_anchor_table,
 )
 
@@ -99,8 +107,47 @@ def anchor_values(raw_reference: np.ndarray) -> np.ndarray:
     return np.array([np.interp(q / 100.0, midranks, vals) for q in ANCHOR_PERCENTILES])
 
 
+def build_smooth_reference(raw_reference: np.ndarray):
+    """The reference for the smooth map: all of the reference library's raw consensus values,
+    prepared the way LazyQSAR prepares a sub-model's knots (sorted, tie-aware ECDF).
+
+    LazyQSAR falls back to the piecewise-linear table, silently, when a reference is too small to
+    carry the smooth curve. That would put this consensus back on the old scale, so it is an error
+    here (it cannot happen with 50,000 molecules).
+    """
+    prepared = prepare_knots(np.sort(np.asarray(raw_reference, dtype=float)))
+    if _smooth_scale(prepared, None) is None:
+        raise ValueError(f"LazyQSAR cannot build its smooth rank curve on these {len(raw_reference):,} "
+                         "reference values and would fall back to the piecewise-linear table.")
+    return prepared
+
+
+def to_rank(raw: np.ndarray, prepared) -> np.ndarray:
+    """Place raw consensus values on the rank scale with LazyQSAR's smooth map (no actives anchor)."""
+    return np.clip(rank_from_reference(np.asarray(raw, dtype=float), prepared=prepared), 0.0, 1.0)
+
+
+def check_order(raw: np.ndarray, rank: np.ndarray, label: str) -> None:
+    """Stop unless `rank` orders the molecules exactly as `raw` does (so Spearman is exactly 1).
+
+    Checked on the unrounded values: sorted by raw, the rank never decreases, and two different raw
+    values never get the same rank (no new ties). Writing 6 decimals to the CSVs can still merge a
+    few near-equal values; that is rounding, not a change of order.
+    """
+    order = np.argsort(raw, kind="stable")
+    r, k = np.asarray(raw)[order], np.asarray(rank)[order]
+    dr, dk = np.diff(r), np.diff(k)
+    n_down = int((dk < 0).sum())
+    n_tied = int(((dr > 0) & (dk <= 0)).sum())
+    if n_down or n_tied:
+        raise AssertionError(f"{label}: the rank does not keep the order of the raw consensus "
+                             f"({n_down} inversions, {n_tied} new ties)")
+
+
 def build_anchor_table(raw_reference: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """The piecewise-linear map (x = raw consensus, y = rank) for one set of models.
+    """LEGACY (the 3.6 straight-line map; step 18b still uses it until it ships the smooth map).
+
+    The piecewise-linear map (x = raw consensus, y = rank) for one set of models.
 
     Built by LazyQSAR's own `reference_anchor_table`: (0, 0), the four reference anchors, (1, 1).
     With no actives anchor, the table runs straight from the last reference anchor to (1, 1).

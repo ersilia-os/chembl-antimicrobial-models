@@ -11,19 +11,22 @@ example output, and writes the copy instructions (step 19 applies them). Nothing
 clone and nothing is pushed.
 
 What the package ships for the consensus: the weighted mean of the sub-models' ranks, placed on the
-rank scale with the anchor table of step 14 (the reference-library calibration of that pathogen,
-baked into consensus.py as 6 + 6 numbers). The consensus threshold is the decision rank 0.65, the
-same as every sub-model. See src/hub_consensus.py (the shipped template) and src/consensus.py (the
+rank scale with LazyQSAR's smooth rank against the reference library's raw consensus, as step 14 does.
+Those 50,000 values are step 14's consensus_knots.npy (~390 KB), shipped as
+model/checkpoints/consensus_knots.npy; consensus.py has the file's SHA-256 baked in and refuses any
+other file. The consensus threshold is the decision rank 0.65, the same as every sub-model. See src/hub_consensus.py (the shipped template) and src/consensus.py (the
 same formulas, used by step 14).
 
 Safeguards, each of which stops the script:
   - the anchors of step 14 must have been built from exactly the kept models and the weights and
-    cutoffs now in 10_reports.csv (weights fingerprint), otherwise "re-run step 14";
+    cutoffs now in 10_reports.csv (weights fingerprint), otherwise "re-run step 14"; its
+    consensus_knots.npy must match the SHA-256 in anchors.json and reproduce its anchors;
   - 10_reports.csv must hold no model below MIN_AUROC (10a keeps only retained models);
   - the example input in the clone must parse (an unparseable SMILES gets no value and `ersilia fetch`
     rejects the model) and the staged example output must have no empty value;
   - the model run in staging must use the pinned lazyqsar version;
-  - consensus_score of the staged output must equal src/consensus.py on the printed sub-model ranks;
+  - consensus_score of the staged output must equal src/consensus.py on the printed sub-model ranks
+    (within what printing the ranks to 4 decimals can move it);
     and on a DrugBank sample (the 15 top of the step-14 consensus + 10 seeded random molecules) the
     staged consensus must equal that of step 14 within 0.01. The staged sub-model ranks are compared
     with step 12b too: a cell beyond 0.01 is FLAGGED in DIFF_SUMMARY.txt for manual review but does not
@@ -35,15 +38,16 @@ Inputs:
   output/10_reports/10_reports.csv            — per-sub-model metrics + weights
   output/07_datasets/07_datasets_metadata.csv — assay context for descriptions
   output/09_models/{pathogen}/                — new sub-model checkpoints
-  output/14_consensus/{pathogen}/anchors.json — anchor table of the weighted consensus + fingerprint
+  output/14_consensus/{pathogen}/anchors.json — anchors of the weighted consensus + fingerprint
+  output/14_consensus/{pathogen}/consensus_knots.npy — the calibration shipped to the Hub
   output/12_drugbank/rank/{pathogen}.csv, output/14_consensus/{pathogen}/drugbank_rank.csv
                                               — compared with the staged model on a DrugBank sample
   {repo-dir}/metadata.yml                     — current published metadata, patched in place
   {repo-dir}/model/framework/{code/main.py,run.sh,examples/run_input.csv} — seed the staging dir
 
 Outputs (all under output/18_emh_files/{pathogen}/):
-  reports.csv, run_columns.csv, consensus.py, metadata.yml, install.yml, run_output.csv,
-  DIFF_SUMMARY.txt, COPY_INSTRUCTIONS.txt
+  reports.csv, run_columns.csv, consensus.py, consensus_knots.npy (pathogens with a consensus),
+  metadata.yml, install.yml, run_output.csv, DIFF_SUMMARY.txt, COPY_INSTRUCTIONS.txt
 
 The model runs in the conda env HUB_RUNTIME_ENV (src/default.py), which must have the pinned
 lazyqsar; conda.sh is taken from $CONDA_SH, else from `conda` on the PATH.
@@ -84,6 +88,7 @@ DRUGBANK_RANKS   = os.path.join(REPO_ROOT, "output", "12_drugbank", "rank")
 OUTPUT_DIR       = os.path.join(REPO_ROOT, "output", "18_emh_files")
 TEMPLATE_PATH    = os.path.join(REPO_ROOT, "src", "hub_consensus.py")
 TMP_DIR          = os.path.join(REPO_ROOT, "tmp")
+KNOTS_FILE       = "consensus_knots.npy"   # name in step 14's folder, the package and the Hub checkpoints
 
 _DROP_COLS    = ["predict_rank_actives", "predict_rank_inactives", "member_assay_ids"]
 _DESCRIPTORS  = ("chemeleon", "clamp", "cddd")
@@ -96,13 +101,17 @@ _DESCRIPTORS  = ("chemeleon", "clamp", "cddd")
 _ERSILIA_PACK_UTILS_VERSION = "0.1.5"
 _LAZYQSAR_VERSION           = "3.9.2"
 
-# The staged model's consensus must equal src/consensus.py applied to the sub-model ranks it printed
-# (rounded to 4 decimals, hence 3e-4: the anchor table has slopes up to ~2). Against steps 12b/14 the
+# The staged model's consensus must equal src/consensus.py applied to the sub-model ranks it printed.
+# Those ranks are rounded to 4 decimals, which moves the raw consensus by up to ~5e-5 (measured: 4.5e-5
+# on 11,347 DrugBank molecules). The smooth map follows the 50,000-point reference ECDF, so its local
+# slope varies; instead of a fixed tolerance, the staged score must lie between the map's values at
+# raw -/+ _PARITY_RAW_SLACK, widened by the 4-decimal rounding of the score itself. Against steps 12b/14 the
 # ranks come from another run, on another CPU: the consensus must agree within _PARITY_TOL_PIPELINE
 # or the script stops. A sub-model rank beyond it is only FLAGGED for manual review: the CPU family
 # alone moves a rank by up to ~0.014 in rare cells (calbicans DR_0008: 0.8058 on Intel nodes, 0.7918 on
 # AMD and on dante, consensus effect 5e-4), so a flag needs a person's look, not a stop.
-_PARITY_TOL_SELF = 3e-4
+_PARITY_RAW_SLACK = 1e-4
+_PARITY_OUT_ROUND = 5e-5
 _PARITY_TOL_PIPELINE = 1e-2
 # DrugBank molecules the staged model is also run on, to compare it with steps 12b and 14: the top of
 # the step-14 consensus (where the calibration matters) and a seeded random draw.
@@ -211,26 +220,39 @@ def load_anchors(pathogen, df):
             f"built with ({pathogen}). Re-run step 14 before shipping."
         )
 
+    kf = a["scale"].get("knots_file")
+    if kf is None:
+        sys.exit(f"FAIL: {path} has no consensus_knots.npy entry: it was made by the old (straight-line) "
+                 "step 14. Re-run step 14.")
+    knots_path = os.path.join(CONSENSUS_DIR, pathogen, kf["name"])
+    if not os.path.isfile(knots_path) or cs.file_sha256(knots_path) != kf["sha256"]:
+        sys.exit(f"FAIL: {knots_path} is missing or is not the file anchors.json describes (SHA-256). Re-run step 14.")
+    knots = np.load(knots_path, allow_pickle=False)
+    if knots.ndim != 1 or len(knots) != kf["n"] or len(knots) != a["reference"]["n"] or np.any(np.diff(knots) < 0):
+        sys.exit(f"FAIL: {knots_path} is not {a['reference']['n']:,} sorted values.")
     table = a["weighted"]["full"]
-    x, y = np.asarray(table["x"], dtype=float), np.asarray(table["y"], dtype=float)
-    if not (len(x) == len(y) >= 3 and np.all(np.diff(x) > 0) and np.all(np.diff(y) >= 0)
-            and (x[0], y[0], x[-1], y[-1]) == (0.0, 0.0, 1.0, 1.0)):
-        sys.exit(f"FAIL: the anchor table of {pathogen} is not a monotone map from (0, 0) to (1, 1): x={x}, y={y}")
+    if not np.allclose(cs.anchor_values(knots), table["anchors_raw"], rtol=0, atol=1e-12):
+        sys.exit(f"FAIL: {knots_path} does not reproduce the anchors of the weighted consensus in anchors.json.")
+    cs.build_smooth_reference(knots)          # stops if LazyQSAR would fall back to the straight-line table
     return {
-        "x": x, "y": y, "decision_rank": float(a["scale"]["decision_rank"]),
+        "knots": knots, "knots_path": knots_path, "knots_sha256": kf["sha256"],
+        "anchors_raw": table["anchors_raw"], "ranks": a["scale"]["ranks"],
+        "decision_rank": float(a["scale"]["decision_rank"]),
         "percentiles": a["scale"]["percentiles"], "reference": a["reference"],
         "lazyqsar_version": a["lazyqsar_version"],
     }
 
 
 def render_consensus_py(anchors):
-    """src/hub_consensus.py with the anchor table of the pathogen filled in."""
+    """src/hub_consensus.py with the SHA-256 of the pathogen's consensus_knots.npy filled in."""
     with open(TEMPLATE_PATH) as f:
         src = f.read()
-    for name, values in (("_ANCHOR_X", anchors["x"]), ("_ANCHOR_Y", anchors["y"])):
-        src, n = re.subn(rf"^{name} = None.*$", f"{name} = {[float(v) for v in values]!r}", src, flags=re.MULTILINE)
-        if n != 1:
-            sys.exit(f"FAIL: could not place {name} in the consensus template ({TEMPLATE_PATH}).")
+    src, n = re.subn(r"^_KNOTS_SHA256 = None.*$", f"_KNOTS_SHA256 = {anchors['knots_sha256']!r}", src, flags=re.MULTILINE)
+    if n != 1:
+        sys.exit(f"FAIL: could not place _KNOTS_SHA256 in the consensus template ({TEMPLATE_PATH}).")
+    knots_file = re.search(r'^_KNOTS_FILE = "([^"]+)"', src, flags=re.MULTILINE)
+    if not knots_file or knots_file.group(1) != KNOTS_FILE:
+        sys.exit(f"FAIL: _KNOTS_FILE of the consensus template is not {KNOTS_FILE!r}.")
     w_cols = re.search(r"^_W_COLS = (\[.*\])$", src, flags=re.MULTILINE)
     if not w_cols or ast.literal_eval(w_cols.group(1)) != list(QUALITY_WEIGHT_COLS):
         sys.exit("FAIL: _W_COLS of the consensus template differs from QUALITY_WEIGHT_COLS in src/default.py.")
@@ -563,7 +585,8 @@ def check_runtime_env(conda_sh):
 
 
 def generate_run_output(conda_sh, repo_dir, pathogen, sub_models, public_name_map, reports_csv_path,
-                        run_columns_csv_path, consensus_py_path, dest_csv, keep_staging, parity_smiles):
+                        run_columns_csv_path, consensus_py_path, dest_csv, keep_staging, parity_smiles,
+                        knots_path=None):
     """Build a staging dir, run bash run.sh on the example input and copy run_output.csv to dest_csv.
     Runs it a second time on `parity_smiles` (not shipped) and returns that output as a DataFrame."""
     os.makedirs(TMP_DIR, exist_ok=True)
@@ -596,6 +619,8 @@ def generate_run_output(conda_sh, repo_dir, pathogen, sub_models, public_name_ma
             # run_columns.csv, even though the source dir keeps its original name.
             shutil.copytree(src, os.path.join(ckpt, "models", public_name_map[sub]))
         shutil.copy2(reports_csv_path, os.path.join(ckpt, "reports.csv"))
+        if knots_path is not None:
+            shutil.copy2(knots_path, os.path.join(ckpt, KNOTS_FILE))
 
         shutil.copy2(run_columns_csv_path, os.path.join(framework_dst, "columns", "run_columns.csv"))
         shutil.copy2(consensus_py_path,    os.path.join(framework_dst, "code", "consensus.py"))
@@ -686,12 +711,18 @@ def check_run_output(rout, pout, parity, df, public_name_map, anchors):
         raw = cs.weighted_consensus(
             ranks[ok], df[QUALITY_WEIGHT_COLS].to_numpy(dtype=float),
             df["decision_cutoff_rank"].to_numpy(dtype=float), np.ones(len(QUALITY_WEIGHT_COLS) + 1))
-        expected = cs.apply_anchor_table(raw, anchors["x"], anchors["y"])
-        diff = float(np.max(np.abs(rout.loc[ok, "consensus_score"].to_numpy(dtype=float) - expected)))
-        if diff > _PARITY_TOL_SELF:
-            sys.exit(f"FAIL: consensus_score differs from src/consensus.py by {diff:.1e} (> {_PARITY_TOL_SELF}).")
+        prepared = cs.build_smooth_reference(anchors["knots"])
+        expected = cs.to_rank(raw, prepared)
+        low  = cs.to_rank(raw - _PARITY_RAW_SLACK, prepared) - _PARITY_OUT_ROUND - 1e-12
+        high = cs.to_rank(raw + _PARITY_RAW_SLACK, prepared) + _PARITY_OUT_ROUND + 1e-12
+        staged = rout.loc[ok, "consensus_score"].to_numpy(dtype=float)
+        outside = int(((staged < low) | (staged > high)).sum())
+        diff = float(np.max(np.abs(staged - expected)))
+        if outside:
+            sys.exit(f"FAIL: consensus_score of {outside} example molecule(s) differs from src/consensus.py by more "
+                     f"than printing the ranks to 4 decimals can explain (max difference {diff:.1e}).")
         lines.append(f"consensus_score vs src/consensus.py on the printed ranks of the {len(rout)} example molecules: "
-                     f"max difference {diff:.1e}")
+                     f"max difference {diff:.1e} (all within the 4-decimal rounding band)")
 
     n = len(parity["smiles"])
     if len(pout) != n:
@@ -801,10 +832,11 @@ def write_diff_summary(path, pathogen, eosXXXX, new_df, new_columns, anchors, ol
                  else f"Consensus threshold (new): {new_thresh_str}")
     if anchors is not None:
         ref = anchors["reference"]
-        lines.append(f"Consensus calibration: reference library {ref['id']} ({ref['n']:,} molecules), table built by "
-                     f"step 14 with lazyqsar {anchors['lazyqsar_version']}")
-        lines.append(f"  raw consensus x : {[round(float(v), 4) for v in anchors['x']]}")
-        lines.append(f"  rank y          : {[round(float(v), 4) for v in anchors['y']]}")
+        lines.append(f"Consensus calibration: smooth LazyQSAR rank against the raw consensus of reference library "
+                     f"{ref['id']} ({ref['n']:,} molecules, {KNOTS_FILE}, SHA-256 {anchors['knots_sha256'][:12]}...), "
+                     f"built by step 14 with lazyqsar {anchors['lazyqsar_version']}")
+        lines.append(f"  raw consensus at p{'/p'.join(f'{q:g}' for q in anchors['percentiles'])}: "
+                     f"{[round(float(v), 4) for v in anchors['anchors_raw']]} -> rank {anchors['ranks']}")
     lines.append("")
 
     old_install = os.path.join(repo_dir, "install.yml")
@@ -839,7 +871,9 @@ def write_diff_summary(path, pathogen, eosXXXX, new_df, new_columns, anchors, ol
 # Copy instructions
 # ---------------------------------------------------------------------------
 
-def write_copy_instructions(path, pathogen, repo_dir, out_dir):
+def write_copy_instructions(path, pathogen, repo_dir, out_dir, has_consensus=True):
+    knots_note = f" and {KNOTS_FILE}, the calibration it reads" if has_consensus else ""
+    knots_line = (f"cp {out_dir}/{KNOTS_FILE} {repo_dir}/model/checkpoints/{KNOTS_FILE}\n" if has_consensus else "")
     rel_repo = repo_dir
     rel_out  = out_dir
     rel_models = os.path.join(MODELS_DIR, pathogen)
@@ -856,9 +890,9 @@ cp {rel_out}/reports.csv {rel_repo}/model/checkpoints/reports.csv
 # 3. run_columns.csv
 cp {rel_out}/run_columns.csv {rel_repo}/model/framework/columns/run_columns.csv
 
-# 4. consensus.py
+# 4. consensus.py{knots_note}
 cp {rel_out}/consensus.py {rel_repo}/model/framework/code/consensus.py
-
+{knots_line}
 # 5. metadata.yml
 cp {rel_out}/metadata.yml {rel_repo}/metadata.yml
 
@@ -1054,7 +1088,8 @@ def main():
     if anchors is None:
         print("      single sub-model — no consensus, no anchors")
     else:
-        print(f"      anchors of step 14 match 10_reports.csv (fingerprint); x={[round(float(v), 4) for v in anchors['x']]}")
+        print(f"      anchors of step 14 match 10_reports.csv (fingerprint); {KNOTS_FILE} matches anchors.json; "
+              f"raw anchors={[round(float(v), 4) for v in anchors['anchors_raw']]}")
 
     print(f"[3/8] Build reports.csv and run_columns.csv")
     reports_out = os.path.join(out_dir, "reports.csv")
@@ -1062,10 +1097,15 @@ def main():
     run_columns_out = os.path.join(out_dir, "run_columns.csv")
     new_columns = build_run_columns(df, path_meta, public_name_map, anchors, run_columns_out)
 
-    print(f"[4/8] Emit consensus.py (src/hub_consensus.py with the anchor table baked in)")
+    print(f"[4/8] Emit consensus.py (src/hub_consensus.py with the calibration's SHA-256 baked in) and {KNOTS_FILE}")
     consensus_out = os.path.join(out_dir, "consensus.py")
     with open(consensus_out, "w") as f:
         f.write(render_consensus_py(anchors) if anchors is not None else open(TEMPLATE_PATH).read())
+    knots_out = os.path.join(out_dir, KNOTS_FILE)
+    if anchors is not None:
+        shutil.copy2(anchors["knots_path"], knots_out)
+    elif os.path.exists(knots_out):
+        os.remove(knots_out)          # a stale calibration from an earlier package of this pathogen
 
     print(f"[5/8] Patch metadata.yml")
     build_metadata_yml(df, meta_df, pathogen, repo_dir, os.path.join(out_dir, "metadata.yml"))
@@ -1083,7 +1123,7 @@ def main():
         conda_sh=conda_sh, repo_dir=repo_dir, pathogen=pathogen, sub_models=sub_models,
         public_name_map=public_name_map, reports_csv_path=reports_out, run_columns_csv_path=run_columns_out,
         consensus_py_path=consensus_out, dest_csv=run_output_out, keep_staging=args.keep_staging,
-        parity_smiles=parity["smiles"],
+        parity_smiles=parity["smiles"], knots_path=knots_out if anchors is not None else None,
     )
     rout = check_example_output(run_output_out, run_columns_out, example_smiles)
     parity_lines, flags = check_run_output(rout, pout, parity, df, public_name_map, anchors)
@@ -1101,6 +1141,7 @@ def main():
     )
     copy_text = write_copy_instructions(
         path=os.path.join(out_dir, "COPY_INSTRUCTIONS.txt"), pathogen=pathogen, repo_dir=repo_dir, out_dir=out_dir,
+        has_consensus=anchors is not None,
     )
 
     print()
