@@ -4,8 +4,8 @@ Step 08 — Download the LazyQSAR descriptor weights and the reference library.
 Run this ONCE from the login node before submitting the SLURM array job (step 09), with
 the project environment:
 
-    envs/camm/bin/python scripts/08_download_weights_and_reference.py
-    envs/camm/bin/python scripts/08_download_weights_and_reference.py --path /custom/dir
+    envs/camm-lq392/bin/python scripts/08_download_weights_and_reference.py
+    envs/camm-lq392/bin/python scripts/08_download_weights_and_reference.py --path /custom/dir
 
 Two halves, in this order because the second depends on the first:
 

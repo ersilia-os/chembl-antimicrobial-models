@@ -14,15 +14,15 @@ Clone this repository and create a Conda environment:
 ```sh
 git clone https://github.com/ersilia-os/chembl-antimicrobial-models.git
 cd chembl-antimicrobial-models
-conda env create -f environment.yml --prefix ./envs/camm
-conda activate ./envs/camm
-pip install --ignore-installed "lazyqsar[all]==3.6.1" \
+conda env create -f environment.yml --prefix ./envs/camm-lq392
+conda activate ./envs/camm-lq392
+pip install --ignore-installed "lazyqsar[all]==3.9.2" \
     torch==2.14.0+cpu --extra-index-url https://download.pytorch.org/whl/cpu
 ```
 
 > **Note:** Environment creation may take 20–40 minutes, most of it downloading PyTorch and the LazyQSAR descriptor stack. The explicit `pip install` step after `conda env create` is required because conda's pip integration does not always resolve all transitive dependencies — running pip directly ensures LazyQSAR and all its dependencies are fully installed. `torch` is repeated there because `--ignore-installed` would otherwise let pip pick the latest CUDA build from PyPI instead of the CPU build pinned in `environment.yml`; every pipeline step runs on CPU, and the CUDA wheel adds several GB of unused libraries.
 
-The `--prefix ./envs/camm` flag places the environment inside the repository directory. This is intentional: on HPC clusters, only the shared filesystem is visible to compute nodes, so the environment must live alongside the code rather than in the default local conda path. Two pipeline steps (05 and 09) are designed to run directly on the cluster to allow for parallelization — see the [Pipeline overview](#pipeline-overview) section below.
+The `--prefix ./envs/camm-lq392` flag places the environment inside the repository directory. This is intentional: on HPC clusters, only the shared filesystem is visible to compute nodes, so the environment must live alongside the code rather than in the default local conda path. Two pipeline steps (05 and 09) are designed to run directly on the cluster to allow for parallelization — see the [Pipeline overview](#pipeline-overview) section below.
 
 ### Data download
 

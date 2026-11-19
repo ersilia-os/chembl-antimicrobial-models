@@ -17,9 +17,14 @@ dependencies:
       - --extra-index-url https://download.pytorch.org/whl/cpu
       - adjustText==1.3.0
       - tabulate==0.9.0
-      # 3.6.1 is 3.6.0 plus the fit-time memory fix (lazy-qsar PR #48). Do not use 3.6.0: its fit
-      # keeps an onnxruntime arena per preprocessor and runs out of memory on the largest datasets.
-      - lazyqsar[all]==3.6.1
+      # 3.9.2 (2026-11-16): reference library v2, the CLAMP fingerprint fix of 3.9.0, the
+      # slow-mode OnnxExportMismatch fixes of 3.9.1 (lazy-qsar #66) and 3.9.2 (#68). Which models
+      # were fitted with 3.9.1 and which with 3.9.2 is recorded in scripts/README.md (step 09).
+      # Results made with 3.6.1 are kept in output/v3.6/.
+      # Build this env with `conda env create` + the pip line of the README, never with
+      # `conda create --clone`: a clone restores conda's scipy over the scipy==1.17.1 that
+      # lazyqsar[fit] pins, and the fitted models change.
+      - lazyqsar[all]==3.9.2
       # Version as in the lazyqsar reference bundle (built with torch 2.14.0 and rdkit
       # 2025.09.1); lazyqsar itself only asks for torch>=2.6.0. The +cpu build because every
       # step runs on CPU nodes — the default PyPI wheel drags in several GB of unused CUDA

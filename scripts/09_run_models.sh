@@ -1,7 +1,7 @@
 #!/bin/bash
 # Step 09 — Train LazyQSAR models on the HPC cluster.
 #
-# Runs in the camm environment (LazyQSAR 3.6.1); run script 08 first, which fetches both the
+# Runs in the envs/camm-lq392 environment (LazyQSAR 3.9.2); run script 08 first, which fetches both the
 # descriptor weights and the reference library.
 #
 # Submit with --array set to the row indices (0-based) of 07_datasets_metadata.csv to train;
@@ -34,4 +34,6 @@ export HOME="$(pwd)/output/08_weights"
 # to the same cache at once, and compute nodes may have no network).
 export LAZYQSAR_REFERENCE_OFFLINE=1
 
-envs/camm/bin/python -u scripts/09_run_models.py "$SLURM_ARRAY_TASK_ID"
+# CAMM_PYTHON overrides the interpreter, e.g. to train with a patched LazyQSAR env:
+#     sbatch --export=ALL,CAMM_PYTHON=envs/<other env>/bin/python ...
+"${CAMM_PYTHON:-envs/camm-lq392/bin/python}" -u scripts/09_run_models.py "$SLURM_ARRAY_TASK_ID"

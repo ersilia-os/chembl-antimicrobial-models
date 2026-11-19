@@ -84,7 +84,7 @@ HUB_CLONES_DIR  = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(_
                                                       # one clone per pathogen, {HUB_CLONES_DIR}/{eosXXXX}, next to this repo
 HUB_URL         = "https://github.com/ersilia-os/{eos_id}.git"   # the remote the existing clones already use
 HUB_BRANCH      = "main"                              # the branch a refresh is committed to and pushed to
-HUB_RUNTIME_ENV = "cam-models-runtime"                # conda env in which 18b runs the model once (lazyqsar must match the pin in 18b)
+HUB_RUNTIME_ENV = "cam-models-runtime-lq392"        # conda env in which 18b runs the model once (lazyqsar must match the pin in 18b)
 
 ERSILIA_MODEL_IDS = {
     "abaumannii":"eos21dr",

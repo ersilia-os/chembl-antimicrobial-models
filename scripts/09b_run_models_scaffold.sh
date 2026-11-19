@@ -39,4 +39,4 @@ export HOME="$(pwd)/output/08_weights"
 # to the same cache at once, and compute nodes may have no network).
 export LAZYQSAR_REFERENCE_OFFLINE=1
 
-envs/camm/bin/python -u scripts/09b_run_models_scaffold.py "$SLURM_ARRAY_TASK_ID"
+envs/camm-lq392/bin/python -u scripts/09b_run_models_scaffold.py "$SLURM_ARRAY_TASK_ID"

@@ -28,4 +28,4 @@ export PYTHONDONTWRITEBYTECODE=1
 export PYTHONNOUSERSITE=1
 export PYTHONUNBUFFERED=1
 
-envs/camm/bin/python -u scripts/12b_predict_drugbank.py "$SLURM_ARRAY_TASK_ID"
+envs/camm-lq392/bin/python -u scripts/12b_predict_drugbank.py "$SLURM_ARRAY_TASK_ID"

@@ -35,4 +35,4 @@ export HOME="$(pwd)/output/08_weights"
 # the network here would either hang or race the other tasks into the same cache.
 export LAZYQSAR_REFERENCE_OFFLINE=1
 
-envs/camm/bin/python -u scripts/12a_predict_reference.py "$SLURM_ARRAY_TASK_ID"
+envs/camm-lq392/bin/python -u scripts/12a_predict_reference.py "$SLURM_ARRAY_TASK_ID"

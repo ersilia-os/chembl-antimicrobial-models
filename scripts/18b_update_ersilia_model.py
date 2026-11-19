@@ -90,9 +90,11 @@ _DESCRIPTORS  = ("chemeleon", "clamp", "cddd")
 
 # Pinned versions for the refreshed install.yml. ersilia-pack-utils matches what was shipped at
 # initial incorporation (02_init_pathogen.py); lazyqsar matches environment.yml and the version the
-# checkpoints were trained and the rank calibrations built with (3.6.0 and the patched 3.6.1 code).
+# checkpoints were trained with (3.9.1 and 3.9.2, which fit identical models except where 3.9.2's
+# lambda-edge fix applies; see scripts/README.md, step 09). Predicting from a checkpoint is the same in
+# both, so the Hub pins the newer one. The 3.6.1 release is in output/v3.6/.
 _ERSILIA_PACK_UTILS_VERSION = "0.1.5"
-_LAZYQSAR_VERSION           = "3.6.1"
+_LAZYQSAR_VERSION           = "3.9.2"
 
 # The staged model's consensus must equal src/consensus.py applied to the sub-model ranks it printed
 # (rounded to 4 decimals, hence 3e-4: the anchor table has slopes up to ~2). Against steps 12b/14 the
