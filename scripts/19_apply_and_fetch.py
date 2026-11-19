@@ -12,12 +12,18 @@ What this script does:
   1. rsyncs the new checkpoints from output/09_models/{pathogen}/ into
      {repo-dir}/model/checkpoints/models/ (--delete drops removed sub-models).
   2. Copies the 6 generated artifacts from output/18_emh_files/{pathogen}/
-     into the right paths under {repo-dir}/.
+     into the right paths under {repo-dir}/, plus consensus_knots.npy (the consensus calibration that
+     consensus.py reads) when the package has one, i.e. for a pathogen with two or more sub-models.
   3. `ersilia delete {eosXXXX}` (silent — clears any cached install).
   4. `ersilia fetch {eosXXXX} --from_dir {repo-dir}`. Fails loud on non-zero
      exit. This validates metadata.yml schema, runs install.yml end-to-end,
      and executes run.sh once.
-Steps 3-4 (and the CONDA_SH requirement) are skipped with --no-fetch, which
+  5. `ersilia delete {eosXXXX}` again once the fetch has passed. Each fetched model builds its own
+     conda env (~7 GB, the size of cam-models-runtime-lq392) on the local disk, and dante has room
+     for about three; deleting right after the check keeps one at a time, so all 15 pathogens can be
+     verified in a row. A failed fetch is left installed, for debugging (step 3 clears it on the
+     next attempt).
+Steps 3-5 (and the CONDA_SH requirement) are skipped with --no-fetch, which
 stops after syncing checkpoints and copying artifacts.
 
 The user (with Claude) then reviews `cd {repo-dir} && git diff`, commits,
@@ -62,6 +68,10 @@ _FILE_COPIES = [
     ("install.yml",    "install.yml"),
     ("run_output.csv", "model/framework/examples/run_output.csv"),
 ]
+# Only in the package of a pathogen with a consensus (two or more sub-models).
+_OPTIONAL_COPIES = [
+    ("consensus_knots.npy", "model/checkpoints/consensus_knots.npy"),
+]
 
 
 def _run_in_ersilia_env(cmd):
@@ -82,7 +92,7 @@ def main():
     args = p.parse_args()
 
     pathogen = args.pathogen
-    total_steps = 2 if args.no_fetch else 4
+    total_steps = 2 if args.no_fetch else 5
 
     if pathogen not in ERSILIA_MODEL_IDS:
         sys.exit(f"Unknown pathogen '{pathogen}'. Known: {sorted(ERSILIA_MODEL_IDS)}")
@@ -153,6 +163,13 @@ def main():
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         shutil.copy2(src, dst)
         print(f"      {src_name} -> {dst_rel}")
+    for src_name, dst_rel in _OPTIONAL_COPIES:
+        src = os.path.join(pkg, src_name)
+        if os.path.exists(src):
+            dst = os.path.join(repo_dir, dst_rel)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            shutil.copy2(src, dst)
+            print(f"      {src_name} -> {dst_rel}")
 
     if not args.no_fetch:
         print(f"[3/{total_steps}] ersilia delete {eosXXXX}  (clear any cached install)")
@@ -163,13 +180,19 @@ def main():
         if res.returncode != 0:
             sys.exit(f"FAIL: ersilia fetch exit {res.returncode}.")
 
+        print(f"[5/{total_steps}] ersilia delete {eosXXXX}  (fetch passed; free the ~7 GB env on local disk)")
+        res = _run_in_ersilia_env(f"ersilia delete {eosXXXX}")
+        if res.returncode != 0:
+            print(f"WARNING: ersilia delete exit {res.returncode}; {eosXXXX} may still be installed. "
+                  f"Remove it before the next fetch or the local disk may fill up.")
+
     print()
     print("=" * 60)
     if args.no_fetch:
         print(f"DONE: checkpoints synced and artifacts copied to {repo_dir}.")
         print(f"ersilia fetch validation was skipped (--no-fetch).")
     else:
-        print(f"PASS: {eosXXXX} fetched from {repo_dir}.")
+        print(f"PASS: {eosXXXX} fetched from {repo_dir}, then deleted again to free local disk.")
     print(f"Next, review and ship:")
     print(f"  cd {repo_dir}")
     print(f"  git diff")
